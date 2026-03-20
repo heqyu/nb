@@ -1,17 +1,12 @@
 use tower_lsp::lsp_types::*;
-use nb_core::lexer::Lexer;
-use nb_core::parser::{Parser, ast::*};
+use nb_core::parser::ast::*;
 
 use crate::symbol_table::type_ann_str;
+use crate::resolution::AnalyzedDoc;
 
-pub fn get_signature_help(source: &str, position: Position) -> Option<SignatureHelp> {
-    // 找到光标所在调用表达式，提取函数名和当前参数索引
-    let (fn_name, arg_index) = find_active_call(source, position)?;
-
-    // 在 AST 中找到该函数的定义
-    let tokens = Lexer::new(source).tokenize().ok()?;
-    let stmts  = Parser::new(tokens).parse_program().ok()?;
-    let fndef  = find_fndef_by_name(&stmts, &fn_name)?;
+pub fn get_signature_help(doc: &AnalyzedDoc, position: Position) -> Option<SignatureHelp> {
+    let (fn_name, arg_index) = find_active_call(&doc.source, position)?;
+    let fndef = find_fndef_by_name(&doc.stmts, &fn_name)?;
 
     // 过滤掉 self 参数
     let params: Vec<&Param> = fndef.params.iter()

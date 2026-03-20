@@ -5,19 +5,106 @@
 //!   pass2 – 带类型上下文解析所有"使用"，把每个 use-span 绑定到 def-span
 //!
 //! 之后 goto-def / find-references / rename 全部查这张表，不再各自遍历 AST。
+//!
+//! 架构：文档变更时统一构建 AnalyzedDoc（lex + parse + build_db），
+//! 所有 LSP 请求从缓存取，不再各自重新解析。
 
 use std::collections::HashMap;
-use nb_core::lexer::Lexer;
+use nb_core::lexer::{Lexer, TokenWithPos};
 use nb_core::parser::{Parser, ast::*};
 
-use crate::symbol_table::{type_ann_str, SymbolInfo};
+use crate::symbol_table::{SymbolInfo};
+
+// ── 文档分析缓存 ──────────────────────────────────────────────────────────────
+
+/// 文档变更时构建一次，供所有 LSP 请求复用
+#[derive(Clone)]
+pub struct AnalyzedDoc {
+    pub source:  String,
+    pub tokens:  Vec<TokenWithPos>,
+    pub stmts:   Vec<Stmt>,
+    pub db:      ResolutionDB,
+    pub diagnostics: Vec<tower_lsp::lsp_types::Diagnostic>,
+}
+
+impl AnalyzedDoc {
+    /// 对源码做完整分析：lex → parse → diagnostics → build_db
+    pub fn from_source(source: String) -> Self {
+        use nb_core::lexer::LexError;
+        use nb_core::parser::ParseError;
+        use tower_lsp::lsp_types::*;
+
+        let mut diags = Vec::new();
+
+        let tokens = match Lexer::new(&source).tokenize() {
+            Ok(t) => t,
+            Err(e) => {
+                diags.push(lex_error_to_diag(&e));
+                return AnalyzedDoc { source, tokens: vec![], stmts: vec![], db: ResolutionDB::default(), diagnostics: diags };
+            }
+        };
+
+        let stmts = match Parser::new(tokens.clone()).parse_program() {
+            Ok(s) => s,
+            Err(e) => {
+                diags.push(parse_error_to_diag(&e));
+                return AnalyzedDoc { source, tokens, stmts: vec![], db: ResolutionDB::default(), diagnostics: diags };
+            }
+        };
+
+        let db = build_db_from_stmts(&stmts);
+        AnalyzedDoc { source, tokens, stmts, db, diagnostics: diags }
+    }
+}
+
+fn lex_error_to_diag(e: &nb_core::lexer::LexError) -> tower_lsp::lsp_types::Diagnostic {
+    use tower_lsp::lsp_types::*;
+    use nb_core::lexer::LexError;
+    let (range, message) = match e {
+        LexError::UnknownChar(_, line, col) => {
+            let pos = Position::new((*line as u32).saturating_sub(1), (*col as u32).saturating_sub(1));
+            (Range::new(pos, Position::new(pos.line, pos.character + 1)), format!("{e}"))
+        }
+        LexError::UnterminatedString(line) => {
+            let pos = Position::new((*line as u32).saturating_sub(1), 0);
+            (Range::new(pos, Position::new(pos.line, u32::MAX)), format!("{e}"))
+        }
+        LexError::InvalidNumber(_, line) => {
+            let pos = Position::new((*line as u32).saturating_sub(1), 0);
+            (Range::new(pos, Position::new(pos.line, u32::MAX)), format!("{e}"))
+        }
+    };
+    tower_lsp::lsp_types::Diagnostic {
+        range, severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
+        message, source: Some("nb".into()), ..Default::default()
+    }
+}
+
+fn parse_error_to_diag(e: &nb_core::parser::ParseError) -> tower_lsp::lsp_types::Diagnostic {
+    use tower_lsp::lsp_types::*;
+    use nb_core::parser::ParseError;
+    let (range, message) = match e {
+        ParseError::Unexpected { line, col, .. } => {
+            let pos = Position::new((*line as u32).saturating_sub(1), (*col as u32).saturating_sub(1));
+            (Range::new(pos, Position::new(pos.line, pos.character + 1)), format!("{e}"))
+        }
+        ParseError::UnexpectedEof(line) => {
+            let pos = Position::new((*line as u32).saturating_sub(1), 0);
+            (Range::new(pos, Position::new(pos.line, u32::MAX)), format!("{e}"))
+        }
+    };
+    tower_lsp::lsp_types::Diagnostic {
+        range, severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
+        message, source: Some("nb".into()), ..Default::default()
+    }
+}
 
 // ── 公共数据结构 ──────────────────────────────────────────────────────────────
 
 /// 每个定义的详细信息（用于 hover）
 pub type DefInfo = SymbolInfo;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ResolutionDB {
     /// use-span → def-span（光标在使用处，跳到定义）
     pub use_to_def: HashMap<Span, Span>,
@@ -111,13 +198,9 @@ impl Scope {
 
 // ── 入口 ──────────────────────────────────────────────────────────────────────
 
-pub fn build_resolution_db(source: &str) -> Option<ResolutionDB> {
-    let tokens = Lexer::new(source).tokenize().ok()?;
-    let stmts  = Parser::new(tokens).parse_program().ok()?;
-
-    let defs = pass1_collect_definitions(&stmts);
-    let db   = pass2_resolve(&stmts, &defs);
-    Some(db)
+fn build_db_from_stmts(stmts: &[Stmt]) -> ResolutionDB {
+    let defs = pass1_collect_definitions(stmts);
+    pass2_resolve(stmts, &defs)
 }
 
 // ── Pass 1：收集所有定义 ──────────────────────────────────────────────────────
@@ -523,15 +606,17 @@ fn infer_type(expr: &Expr, scope: &Scope) -> Option<String> {
 
 // ── 公共查询工具 ──────────────────────────────────────────────────────────────
 
-/// 从 ResolutionDB（已包含所有绝对坐标的 span）中找光标位置命中的 span。
-/// 同时也扫描顶层 token 流里的普通 Ident（cover 未被 DB 收录的位置）。
-pub fn span_at_position(source: &str, pos: tower_lsp::lsp_types::Position) -> Option<Span> {
+/// 在 AnalyzedDoc 中查找光标命中的 span（包含插值字符串内的 ident）。
+/// 先查 token 流（快路径），找不到时在 DB 中枚举（慢路径，覆盖插值内 ident）。
+pub fn span_at_position_with_db(
+    doc: &AnalyzedDoc,
+    pos: tower_lsp::lsp_types::Position,
+) -> Option<Span> {
     let target_line = (pos.line + 1) as usize;
     let target_col  = (pos.character + 1) as usize;
 
-    // 只扫顶层 token 流中的普通 Ident（插值内的 ident 不在顶层流）
-    let tokens = Lexer::new(source).tokenize().ok()?;
-    for twp in &tokens {
+    // 快路径：顶层 token 流
+    for twp in &doc.tokens {
         if twp.line != target_line { continue; }
         if let nb_core::lexer::Token::Ident(name) = &twp.token {
             let end = twp.col + name.len();
@@ -540,34 +625,15 @@ pub fn span_at_position(source: &str, pos: tower_lsp::lsp_types::Position) -> Op
             }
         }
     }
-    None
-}
 
-/// 在 ResolutionDB 里查找覆盖目标位置的 span（包含插值字符串内的 ident）。
-/// 先用 span_at_position 找 token 流中的 span；找不到时在 DB 中枚举。
-pub fn span_at_position_with_db(
-    db: &ResolutionDB,
-    source: &str,
-    pos: tower_lsp::lsp_types::Position,
-) -> Option<Span> {
-    // 先试 token 流（快路径，覆盖绝大多数情况）
-    if let Some(s) = span_at_position(source, pos) {
-        return Some(s);
-    }
-
-    // 慢路径：在 DB 收录的所有 use-span 和 def-span 中查找
-    // （插值字符串内的 ident 通过 parser 已获得绝对坐标，会被 record_use 写入 DB）
-    let target_line = (pos.line + 1) as usize;
-    let target_col  = (pos.character + 1) as usize;
-
-    // 收集所有已知 span
+    // 慢路径：DB 中所有 use-span / def-span（含插值内 ident，已有绝对坐标）
+    let db = &doc.db;
     let mut candidates: Vec<Span> = Vec::new();
     candidates.extend(db.use_to_def.keys().copied());
     candidates.extend(db.def_info.keys().copied());
 
     for span in candidates {
         if span.line != target_line { continue; }
-        // 从 def_info 或 use_to_def 反推符号名长度
         let name_len = if let Some(info) = db.def_info.get(&span) {
             info.name().len()
         } else if let Some(def) = db.use_to_def.get(&span) {

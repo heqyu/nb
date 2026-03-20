@@ -1,6 +1,8 @@
 use tower_lsp::lsp_types::*;
-use nb_core::lexer::{Lexer, Token};
-use nb_core::parser::{Parser, ast::*};
+use nb_core::lexer::{Token, TokenWithPos};
+use nb_core::parser::ast::*;
+
+use crate::resolution::AnalyzedDoc;
 
 // 语义 token 类型索引（与 LEGEND 中的顺序对应）
 pub const TOKEN_TYPE_NAMESPACE: u32  = 0;
@@ -38,15 +40,14 @@ struct RawToken {
     token_type: u32,
 }
 
-/// 对给定源码生成语义 token 列表（LSP 编码格式）
-pub fn get_semantic_tokens(source: &str) -> Vec<SemanticToken> {
+/// 从 AnalyzedDoc 生成语义 token 列表（LSP 编码格式）
+pub fn get_semantic_tokens(doc: &AnalyzedDoc) -> Vec<SemanticToken> {
     let mut raw_tokens: Vec<RawToken> = Vec::new();
 
-    // 第一遍：从 Token 流提取关键字、字符串、数字的位置
-    if let Ok(token_list) = Lexer::new(source).tokenize() {
-        for twp in &token_list {
-            let line = (twp.line as u32).saturating_sub(1);
-            let col  = (twp.col  as u32).saturating_sub(1);
+    // 第一遍：从已有 Token 流提取关键字、字符串、数字的位置
+    for twp in &doc.tokens {
+        let line = (twp.line as u32).saturating_sub(1);
+        let col  = (twp.col  as u32).saturating_sub(1);
             match &twp.token {
                 // 关键字
                 Token::Let | Token::Mut | Token::Fn | Token::Return |
@@ -75,14 +76,9 @@ pub fn get_semantic_tokens(source: &str) -> Vec<SemanticToken> {
                 _ => {}
             }
         }
-    }
 
-    // 第二遍：从 AST 提取函数名、类名、参数名的精确位置
-    if let Ok(token_list) = Lexer::new(source).tokenize() {
-        if let Ok(stmts) = Parser::new(token_list).parse_program() {
-            collect_ast_tokens(&stmts, &mut raw_tokens);
-        }
-    }
+    // 第二遍：从已有 AST 提取函数名、类名、参数名的精确位置
+    collect_ast_tokens(&doc.stmts, &mut raw_tokens);
 
     // 按行列排序
     raw_tokens.sort_by(|a, b| a.line.cmp(&b.line).then(a.col.cmp(&b.col)));

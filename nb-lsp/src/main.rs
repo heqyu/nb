@@ -1,4 +1,3 @@
-mod diagnostics;
 mod semantic;
 mod symbol_table;
 mod resolution;

@@ -1,23 +1,15 @@
 use tower_lsp::lsp_types::*;
-use nb_core::lexer::Lexer;
-use nb_core::parser::{Parser, ast::*};
+use nb_core::parser::ast::*;
 use crate::symbol_table::{span_to_lsp_range, type_ann_str};
+use crate::resolution::AnalyzedDoc;
 
 fn span_to_range(span: &Span, length: u32) -> Range {
     span_to_lsp_range(span, length)
 }
 
-/// 对给定源码生成文档大纲（Document Symbols）
-pub fn get_document_symbols(source: &str) -> Vec<DocumentSymbol> {
-    let tokens = match Lexer::new(source).tokenize() {
-        Ok(t) => t,
-        Err(_) => return vec![],
-    };
-    let stmts = match Parser::new(tokens).parse_program() {
-        Ok(s) => s,
-        Err(_) => return vec![],
-    };
-    collect_symbols(&stmts)
+/// 对给定 AnalyzedDoc 生成文档大纲（Document Symbols）
+pub fn get_document_symbols(doc: &AnalyzedDoc) -> Vec<DocumentSymbol> {
+    collect_symbols(&doc.stmts)
 }
 
 fn collect_symbols(stmts: &[Stmt]) -> Vec<DocumentSymbol> {

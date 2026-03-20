@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
-use nb_core::lexer::Lexer;
-use nb_core::parser::{Parser, ast::*};
+use nb_core::parser::ast::*;
 
 use crate::symbol_table::type_ann_str;
+use crate::resolution::AnalyzedDoc;
 
 /// NB 语言关键字补全列表（label, snippet）
 const KEYWORDS: &[(&str, &str)] = &[
@@ -38,7 +38,7 @@ const KEYWORDS: &[(&str, &str)] = &[
 // ── 解析辅助结构 ──────────────────────────────────────────────────────────────
 
 struct ParsedDoc {
-    /// 变量名 → 类名（通过 let x = new Foo(...) 推断）
+    /// 变量名 → 类名（通过 let x = ClassName { ... } 推断）
     type_map: HashMap<String, String>,
     /// 类名 → (ClassDef, receiver 方法列表)
     class_map: HashMap<String, (ClassDef, Vec<FnDef>)>,
@@ -49,18 +49,15 @@ struct ParsedDoc {
 }
 
 impl ParsedDoc {
-    fn from_source(source: &str) -> Option<Self> {
-        let tokens = Lexer::new(source).tokenize().ok()?;
-        let stmts  = Parser::new(tokens).parse_program().ok()?;
-
+    fn from_stmts(stmts: &[Stmt]) -> Self {
         let mut doc = ParsedDoc {
             type_map:     HashMap::new(),
             class_map:    HashMap::new(),
             mixin_map:    HashMap::new(),
             symbol_names: Vec::new(),
         };
-        doc.collect_stmts(&stmts);
-        Some(doc)
+        doc.collect_stmts(stmts);
+        doc
     }
 
     fn collect_stmts(&mut self, stmts: &[Stmt]) {
@@ -125,12 +122,13 @@ impl ParsedDoc {
 
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 
-pub fn get_completions(source: &str, position: Position) -> Vec<CompletionItem> {
+pub fn get_completions(doc: &AnalyzedDoc, position: Position) -> Vec<CompletionItem> {
+    let source = &doc.source;
     let prefix = get_prefix(source, position);
 
     // 成员访问补全（x.___）
     if let Some(obj_name) = dot_object(source, position) {
-        return member_completions(source, &obj_name, &prefix);
+        return member_completions(&doc.stmts, &obj_name, &prefix);
     }
 
     // 普通补全：关键字 + 当前文档符号
@@ -153,11 +151,10 @@ pub fn get_completions(source: &str, position: Position) -> Vec<CompletionItem> 
     }
 
     // 文档符号
-    if let Some(doc) = ParsedDoc::from_source(source) {
-        for (name, kind, detail) in &doc.symbol_names {
-            if name.starts_with(prefix.as_str()) && !items.iter().any(|i| &i.label == name) {
-                items.push(symbol_item(name, *kind, detail.clone()));
-            }
+    let parsed = ParsedDoc::from_stmts(&doc.stmts);
+    for (name, kind, detail) in &parsed.symbol_names {
+        if name.starts_with(prefix.as_str()) && !items.iter().any(|i| &i.label == name) {
+            items.push(symbol_item(name, *kind, detail.clone()));
         }
     }
 
@@ -166,8 +163,8 @@ pub fn get_completions(source: &str, position: Position) -> Vec<CompletionItem> 
 
 // ── 成员补全 ──────────────────────────────────────────────────────────────────
 
-fn member_completions(source: &str, obj_name: &str, prefix: &str) -> Vec<CompletionItem> {
-    let Some(doc) = ParsedDoc::from_source(source) else { return vec![]; };
+fn member_completions(stmts: &[Stmt], obj_name: &str, prefix: &str) -> Vec<CompletionItem> {
+    let doc = ParsedDoc::from_stmts(stmts);
 
     // 推断对象类型
     let class_name = if obj_name == "self" {

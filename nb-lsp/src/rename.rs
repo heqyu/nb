@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
-use crate::resolution::{build_resolution_db, span_at_position_with_db, span_to_range, name_len_at};
+use crate::resolution::{AnalyzedDoc, span_at_position_with_db, span_to_range, name_len_at};
 
-pub fn get_rename(source: &str, uri: &Url, position: Position, new_name: &str) -> Option<WorkspaceEdit> {
-    let db   = build_resolution_db(source)?;
-    let span = span_at_position_with_db(&db, source, position)?;
-    let all  = db.find_all_occurrences(span);
+pub fn get_rename(doc: &AnalyzedDoc, uri: &Url, position: Position, new_name: &str) -> Option<WorkspaceEdit> {
+    let span = span_at_position_with_db(doc, position)?;
+    let all  = doc.db.find_all_occurrences(span);
     if all.is_empty() { return None; }
 
-    let def = db.use_to_def.get(&span).copied().unwrap_or(span);
-    let len = name_len_at(&db, def);
+    let def = doc.db.use_to_def.get(&span).copied().unwrap_or(span);
+    let len = name_len_at(&doc.db, def);
 
     let edits: Vec<TextEdit> = all.into_iter().map(|s| TextEdit {
         range: span_to_range(&s, len),
