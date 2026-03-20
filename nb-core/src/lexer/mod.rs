@@ -26,7 +26,7 @@ pub enum Token {
     Break,
     Continue,
     Class,
-    Trait,
+    Mixin,
     Require,
     New,
     Is,
@@ -384,7 +384,7 @@ impl Lexer {
             "break"    => Token::Break,
             "continue" => Token::Continue,
             "class"    => Token::Class,
-            "trait"    => Token::Trait,
+            "mixin"    => Token::Mixin,
             "require"  => Token::Require,
             "new"      => Token::New,
             "is"       => Token::Is,
@@ -451,9 +451,9 @@ mod tests {
 
     #[test]
     fn test_keywords() {
-        let tokens = lex("class Animal trait Damageable fn ctor new self");
+        let tokens = lex("class Animal mixin Damageable fn ctor new self");
         assert!(tokens.contains(&Token::Class));
-        assert!(tokens.contains(&Token::Trait));
+        assert!(tokens.contains(&Token::Mixin));
         assert!(tokens.contains(&Token::Fn));
         assert!(tokens.contains(&Token::New));
         assert!(tokens.contains(&Token::Self_));

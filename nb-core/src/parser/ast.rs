@@ -87,8 +87,8 @@ pub enum Stmt {
     Continue,
     /// class 定义
     ClassDef(ClassDef),
-    /// trait 定义
-    TraitDef(TraitDef),
+    /// mixin 定义
+    MixinDef(MixinDef),
     /// throw expr
     Throw(Expr),
     /// export { a, b, c }
@@ -123,7 +123,7 @@ pub struct Param {
 pub struct ClassDef {
     pub name: String,
     pub name_span: Span,        // 类名位置
-    pub parents: Vec<String>,   // 继承和 trait
+    pub mixins: Vec<String>,    // 混入的 mixin 列表（原 parents）
     pub fields: Vec<FieldDef>,
     pub methods: Vec<MethodDef>,
     pub span: Span,             // class 关键字位置
@@ -143,14 +143,14 @@ pub struct MethodDef {
     pub fn_def: FnDef,
 }
 
-/// trait 定义
+/// mixin 定义
 #[derive(Debug, Clone)]
-pub struct TraitDef {
+pub struct MixinDef {
     pub name: String,
-    pub name_span: Span,        // trait 名位置
+    pub name_span: Span,        // mixin 名位置
     pub requires: Vec<FieldDef>,
     pub methods: Vec<FnDef>,
-    pub span: Span,             // trait 关键字位置
+    pub span: Span,             // mixin 关键字位置
 }
 
 /// 二元操作符

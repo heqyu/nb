@@ -30,7 +30,7 @@ fn collect_symbols(stmts: &[Stmt]) -> Vec<DocumentSymbol> {
                 }
             }
             Stmt::ClassDef(cd) => out.push(classdef_symbol(cd)),
-            Stmt::TraitDef(td) => out.push(traitdef_symbol(td)),
+            Stmt::MixinDef(td) => out.push(mixindef_symbol(td)),
             Stmt::Let { name, name_span, .. } => {
                 let range = span_to_range(name_span, name.len() as u32);
                 out.push(make_symbol(name.clone(), None, SymbolKind::VARIABLE, range, None));
@@ -76,15 +76,15 @@ fn classdef_symbol(cd: &ClassDef) -> DocumentSymbol {
         }
     }
 
-    let detail = if cd.parents.is_empty() {
+    let detail = if cd.mixins.is_empty() {
         None
     } else {
-        Some(cd.parents.join(", "))
+        Some(cd.mixins.join(", "))
     };
     make_symbol(cd.name.clone(), detail, SymbolKind::CLASS, range, Some(children))
 }
 
-fn traitdef_symbol(td: &TraitDef) -> DocumentSymbol {
+fn mixindef_symbol(td: &MixinDef) -> DocumentSymbol {
     let range = span_to_range(&td.name_span, td.name.len() as u32);
 
     let mut children = Vec::new();

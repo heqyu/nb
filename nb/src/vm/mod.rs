@@ -22,7 +22,7 @@ pub enum Value {
     Function(Rc<Function>),
     NativeFunction(Rc<NativeFn>),
     Class(Rc<ClassObj>),
-    Trait(Rc<TraitObj>),
+    Mixin(Rc<MixinObj>),
     Instance(Rc<RefCell<Instance>>),
     // Range 只在 for 迭代时使用
     Range(f64, f64),
@@ -69,17 +69,17 @@ pub type NativeFn = dyn Fn(Vec<Value>) -> Result<Value, RuntimeError>;
 #[derive(Clone)]
 pub struct ClassObj {
     pub name: String,
-    pub module: String,                        // 所在模块名（用于 type() 返回全限定名）
-    pub parents: Vec<Rc<ClassObj>>,            // 父类
-    pub traits: Vec<Rc<TraitObj>>,             // 实现的 trait
-    pub fields: Vec<FieldDef>,                 // 字段声明
+    pub module: String,
+    pub mixins: Vec<Rc<MixinObj>>,             // 混入的 mixin
+    pub fields: Vec<FieldDef>,
     pub methods: HashMap<String, Rc<Function>>,
     pub static_methods: HashMap<String, Rc<Function>>,
 }
 
 #[derive(Clone)]
-pub struct TraitObj {
+pub struct MixinObj {
     pub name: String,
+    pub requires: Vec<FieldDef>,
     pub methods: HashMap<String, Rc<Function>>,
 }
 
@@ -130,7 +130,7 @@ impl fmt::Display for Value {
             Value::Function(func) => write!(f, "<fn {}>", func.name.as_deref().unwrap_or("anonymous")),
             Value::NativeFunction(_) => write!(f, "<native fn>"),
             Value::Class(c)     => write!(f, "<class {}>", c.name),
-            Value::Trait(t)     => write!(f, "<trait {}>", t.name),
+            Value::Mixin(m)     => write!(f, "<mixin {}>", m.name),
             Value::Instance(i)  => {
                 let inst = i.borrow();
                 // 如果有 to_string 方法则调用（在 Interpreter 中处理，这里简单输出类名）
@@ -156,7 +156,7 @@ impl Value {
             Value::Dict(_)      => "dict".into(),
             Value::Function(_) | Value::NativeFunction(_) => "function".into(),
             Value::Class(_)     => "class".into(),
-            Value::Trait(_)     => "trait".into(),
+            Value::Mixin(_)     => "mixin".into(),
             Value::Instance(i)  => {
                 let inst = i.borrow();
                 format!("{}.{}", inst.class.module, inst.class.name)
@@ -182,11 +182,8 @@ impl Value {
 
 fn check_instance_of(class: &Rc<ClassObj>, name: &str) -> bool {
     if class.name == name { return true; }
-    for parent in &class.parents {
-        if check_instance_of(parent, name) { return true; }
-    }
-    for t in &class.traits {
-        if t.name == name { return true; }
+    for m in &class.mixins {
+        if m.name == name { return true; }
     }
     false
 }
@@ -477,8 +474,8 @@ impl Interpreter {
                 Ok(None)
             }
 
-            Stmt::TraitDef(td) => {
-                self.define_trait(td, env)?;
+            Stmt::MixinDef(md) => {
+                self.define_mixin(md, env)?;
                 Ok(None)
             }
 
@@ -1066,25 +1063,12 @@ impl Interpreter {
         let inst = Rc::new(RefCell::new(Instance::new(class.clone())));
         let inst_val = Value::Instance(inst.clone());
 
-        // 调用继承链上所有父类 ctor（从最顶层开始）
-        self.call_ctors_parents(&class, inst_val.clone(), &args)?;
-
         // 调用自身 ctor
         if let Some(ctor) = class.methods.get("ctor") {
             self.call_ctor(ctor.clone(), inst_val.clone(), args)?;
         }
 
         Ok(inst_val)
-    }
-
-    fn call_ctors_parents(&mut self, class: &Rc<ClassObj>, inst: Value, args: &[Value]) -> Result<(), RuntimeError> {
-        for parent in &class.parents {
-            self.call_ctors_parents(parent, inst.clone(), args)?;
-            if let Some(ctor) = parent.methods.get("ctor") {
-                self.call_ctor(ctor.clone(), inst.clone(), args.to_vec())?;
-            }
-        }
-        Ok(())
     }
 
     fn call_ctor(&mut self, ctor: Rc<Function>, inst: Value, args: Vec<Value>) -> Result<(), RuntimeError> {
@@ -1128,44 +1112,45 @@ impl Interpreter {
         Ok(None)
     }
 
-    // ── class/trait 定义 ──
+    // ── class/mixin 定义 ──
 
     fn define_class(&mut self, cd: &ClassDef, env: Rc<RefCell<Env>>) -> Result<(), RuntimeError> {
-        let mut parents = Vec::new();
-        let mut traits  = Vec::new();
+        let mut mixins: Vec<Rc<MixinObj>> = Vec::new();
 
-        for pname in &cd.parents {
-            match env.borrow().get(pname) {
-                Some(Value::Class(c))  => parents.push(c),
-                Some(Value::Trait(t))  => traits.push(t),
-                _ => return Err(RuntimeError::new(format!("未定义的父类或 trait '{pname}'"))),
+        for mname in &cd.mixins {
+            match env.borrow().get(mname) {
+                Some(Value::Mixin(m)) => mixins.push(m),
+                Some(_) => return Err(RuntimeError::new(format!("'{mname}' 不是一个 mixin"))),
+                None    => return Err(RuntimeError::new(format!("未定义的 mixin '{mname}'"))),
             }
         }
 
-        // 收集所有字段（包括父类和 trait require）
-        let mut all_fields = Vec::new();
-        for p in &parents {
-            for f in &p.fields { all_fields.push(f.clone()); }
-        }
-        for f in &cd.fields { all_fields.push(f.clone()); }
-
-        // 收集方法
-        let mut methods = HashMap::new();
-        let mut static_methods = HashMap::new();
-
-        // 先继承父类方法
-        for p in &parents {
-            for (name, m) in &p.methods {
-                methods.insert(name.clone(), m.clone());
+        // require 静态检查：验证 class 声明了 mixin 所需的全部字段
+        let class_field_names: Vec<&str> = cd.fields.iter().map(|f| f.name.as_str()).collect();
+        for m_rc in &mixins {
+            for req in &m_rc.requires {
+                if !class_field_names.contains(&req.name.as_str()) {
+                    return Err(RuntimeError::new(format!(
+                        "class '{}' 混入 '{}' 但缺少必需字段 '{}'",
+                        cd.name, m_rc.name, req.name
+                    )));
+                }
             }
         }
-        // 再继承 trait 方法
-        for t in &traits {
-            for (name, m) in &t.methods {
-                methods.insert(name.clone(), m.clone());
+
+        // 收集字段
+        let all_fields = cd.fields.clone();
+
+        // 收集方法：mixin 方法先混入（按列表顺序，后者覆盖前者）
+        let mut methods: HashMap<String, Rc<Function>> = HashMap::new();
+        let mut static_methods: HashMap<String, Rc<Function>> = HashMap::new();
+
+        for m in &mixins {
+            for (name, func) in &m.methods {
+                methods.insert(name.clone(), func.clone());
             }
         }
-        // 自身方法覆盖
+        // 自身方法覆盖 mixin
         for md in &cd.methods {
             let func = Rc::new(Function {
                 name: md.fn_def.name.clone(),
@@ -1183,8 +1168,7 @@ impl Interpreter {
         let class_obj = Rc::new(ClassObj {
             name: cd.name.clone(),
             module: self.module_name.clone(),
-            parents,
-            traits,
+            mixins,
             fields: all_fields,
             methods,
             static_methods,
@@ -1194,9 +1178,9 @@ impl Interpreter {
         Ok(())
     }
 
-    fn define_trait(&mut self, td: &TraitDef, env: Rc<RefCell<Env>>) -> Result<(), RuntimeError> {
+    fn define_mixin(&mut self, md: &MixinDef, env: Rc<RefCell<Env>>) -> Result<(), RuntimeError> {
         let mut methods = HashMap::new();
-        for m in &td.methods {
+        for m in &md.methods {
             let func = Rc::new(Function {
                 name: m.name.clone(),
                 params: m.params.clone(),
@@ -1205,8 +1189,12 @@ impl Interpreter {
             });
             methods.insert(m.name.clone().unwrap_or_default(), func);
         }
-        let trait_obj = Rc::new(TraitObj { name: td.name.clone(), methods });
-        env.borrow_mut().define(td.name.clone(), Value::Trait(trait_obj), false);
+        let mixin_obj = Rc::new(MixinObj {
+            name: md.name.clone(),
+            requires: md.requires.clone(),
+            methods,
+        });
+        env.borrow_mut().define(md.name.clone(), Value::Mixin(mixin_obj), false);
         Ok(())
     }
 
@@ -1324,11 +1312,7 @@ fn cmp_values(a: &Value, b: &Value) -> Result<i32, RuntimeError> {
 }
 
 fn find_method(class: &Rc<ClassObj>, name: &str) -> Option<Rc<Function>> {
-    if let Some(m) = class.methods.get(name) { return Some(m.clone()); }
-    for parent in &class.parents {
-        if let Some(m) = find_method(parent, name) { return Some(m); }
-    }
-    None
+    class.methods.get(name).cloned()
 }
 
 fn make_bound_method(method: Rc<Function>, this: Value) -> Value {

@@ -51,7 +51,7 @@ pub fn get_semantic_tokens(source: &str) -> Vec<SemanticToken> {
                 // 关键字
                 Token::Let | Token::Mut | Token::Fn | Token::Return |
                 Token::If | Token::Else | Token::For | Token::While | Token::In |
-                Token::Break | Token::Continue | Token::Class | Token::Trait |
+                Token::Break | Token::Continue | Token::Class | Token::Mixin |
                 Token::New | Token::Is | Token::Self_ | Token::Super |
                 Token::Static | Token::Throw | Token::Protect |
                 Token::Async | Token::Await | Token::Export | Token::Require |
@@ -84,7 +84,7 @@ pub fn get_semantic_tokens(source: &str) -> Vec<SemanticToken> {
         }
     }
 
-    // 按行列排序，去重（AST token 优先级高于关键字，但这里简单 append 后排序）
+    // 按行列排序
     raw_tokens.sort_by(|a, b| a.line.cmp(&b.line).then(a.col.cmp(&b.col)));
 
     // 编码为 LSP delta 格式
@@ -103,28 +103,24 @@ fn collect_stmt_tokens(stmt: &Stmt, out: &mut Vec<RawToken>) {
             out.push(span_token(name_span, name.len() as u32, TOKEN_TYPE_VARIABLE));
         }
         Stmt::MultiLet { names, .. } => {
-            // MultiLet 的各变量 span 暂时没记录，跳过
             let _ = names;
         }
         Stmt::FnDef(f) => collect_fndef_tokens(f, out),
         Stmt::ClassDef(cd) => {
-            // 类名
             out.push(span_token(&cd.name_span, cd.name.len() as u32, TOKEN_TYPE_CLASS));
-            // 字段名
             for field in &cd.fields {
                 out.push(span_token(&field.name_span, field.name.len() as u32, TOKEN_TYPE_VARIABLE));
             }
-            // 方法
             for method in &cd.methods {
                 collect_fndef_tokens(&method.fn_def, out);
             }
         }
-        Stmt::TraitDef(td) => {
-            out.push(span_token(&td.name_span, td.name.len() as u32, TOKEN_TYPE_CLASS));
-            for req in &td.requires {
+        Stmt::MixinDef(md) => {
+            out.push(span_token(&md.name_span, md.name.len() as u32, TOKEN_TYPE_CLASS));
+            for req in &md.requires {
                 out.push(span_token(&req.name_span, req.name.len() as u32, TOKEN_TYPE_VARIABLE));
             }
-            for m in &td.methods {
+            for m in &md.methods {
                 collect_fndef_tokens(m, out);
             }
         }
@@ -158,17 +154,14 @@ fn collect_stmt_tokens(stmt: &Stmt, out: &mut Vec<RawToken>) {
 }
 
 fn collect_fndef_tokens(f: &FnDef, out: &mut Vec<RawToken>) {
-    // 函数名
     if let Some(name) = &f.name {
         out.push(span_token(&f.name_span, name.len() as u32, TOKEN_TYPE_FUNCTION));
     }
-    // 参数名（排除 self）
     for param in &f.params {
         if param.name != "self" {
             out.push(span_token(&param.name_span, param.name.len() as u32, TOKEN_TYPE_PARAMETER));
         }
     }
-    // 函数体
     collect_ast_tokens(&f.body, out);
 }
 
@@ -180,12 +173,10 @@ fn collect_expr_tokens(expr: &Expr, out: &mut Vec<RawToken>) {
             }
         }
         Expr::Call { callee, args, .. } => {
-            // 如果是方法调用 obj.method()，field 本身应标记为 FUNCTION
             if let Expr::Field { obj, field, field_span } = callee.as_ref() {
                 collect_expr_tokens(obj, out);
                 out.push(span_token(field_span, field.len() as u32, TOKEN_TYPE_FUNCTION));
             } else {
-                // 普通函数调用
                 collect_expr_tokens(callee, out);
             }
             for arg in args { collect_expr_tokens(&arg.expr, out); }
@@ -240,7 +231,7 @@ fn span_token(span: &Span, length: u32, token_type: u32) -> RawToken {
     }
 }
 
-/// 编码为 LSP delta 格式（每个 token 相对前一个 token 的偏移）
+/// 编码为 LSP delta 格式
 fn encode_semantic_tokens(raw: &[RawToken]) -> Vec<SemanticToken> {
     let mut result = Vec::new();
     let mut prev_line = 0u32;
@@ -277,7 +268,7 @@ fn token_keyword_str(tok: &Token) -> &'static str {
         Token::Break    => "break",
         Token::Continue => "continue",
         Token::Class    => "class",
-        Token::Trait    => "trait",
+        Token::Mixin    => "mixin",
         Token::New      => "new",
         Token::Is       => "is",
         Token::Self_    => "self",

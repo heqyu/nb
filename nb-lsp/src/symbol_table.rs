@@ -20,11 +20,11 @@ pub enum SymbolInfo {
     },
     Class {
         name: String,
-        parents: Vec<String>,
+        mixins: Vec<String>,
         fields: Vec<FieldDef>,
         methods: Vec<FnDef>,
     },
-    Trait {
+    Mixin {
         name: String,
         requires: Vec<FieldDef>,
         methods: Vec<FnDef>,
@@ -42,7 +42,7 @@ impl SymbolInfo {
             SymbolInfo::Variable  { name, .. } => name,
             SymbolInfo::Function  { name, .. } => name,
             SymbolInfo::Class     { name, .. } => name,
-            SymbolInfo::Trait     { name, .. } => name,
+            SymbolInfo::Mixin     { name, .. } => name,
             SymbolInfo::Parameter { name, .. } => name,
         }
     }
@@ -112,7 +112,7 @@ fn collect_stmt(stmt: &Stmt, out: &mut Vec<SymbolEntry>) {
             out.push(SymbolEntry {
                 info: SymbolInfo::Class {
                     name: cd.name.clone(),
-                    parents: cd.parents.clone(),
+                    mixins: cd.mixins.clone(),
                     fields: cd.fields.clone(),
                     methods,
                 },
@@ -122,16 +122,16 @@ fn collect_stmt(stmt: &Stmt, out: &mut Vec<SymbolEntry>) {
                 collect_fndef(&m.fn_def, out);
             }
         }
-        Stmt::TraitDef(td) => {
+        Stmt::MixinDef(md) => {
             out.push(SymbolEntry {
-                info: SymbolInfo::Trait {
-                    name: td.name.clone(),
-                    requires: td.requires.clone(),
-                    methods: td.methods.clone(),
+                info: SymbolInfo::Mixin {
+                    name: md.name.clone(),
+                    requires: md.requires.clone(),
+                    methods: md.methods.clone(),
                 },
-                def_span: td.name_span,
+                def_span: md.name_span,
             });
-            for m in &td.methods {
+            for m in &md.methods {
                 collect_fndef(m, out);
             }
         }

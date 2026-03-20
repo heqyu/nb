@@ -116,7 +116,7 @@ impl Parser {
             Token::Break    => { self.advance(); Ok(Stmt::Break) }
             Token::Continue => { self.advance(); Ok(Stmt::Continue) }
             Token::Class    => self.parse_class(),
-            Token::Trait    => self.parse_trait(),
+            Token::Mixin    => self.parse_mixin(),
             Token::Throw    => self.parse_throw(),
             Token::Export   => self.parse_export(),
             _               => self.parse_expr_stmt(),
@@ -262,11 +262,11 @@ impl Parser {
         let span = self.peek_span();
         self.expect(&Token::Class)?;
         let (name, name_span) = self.expect_ident_with_span()?;
-        let mut parents = Vec::new();
+        let mut mixins = Vec::new();
         if self.eat(&Token::Colon) {
-            parents.push(self.expect_ident()?);
+            mixins.push(self.expect_ident()?);
             while self.eat(&Token::Comma) {
-                parents.push(self.expect_ident()?);
+                mixins.push(self.expect_ident()?);
             }
         }
         self.expect(&Token::LBrace)?;
@@ -286,12 +286,12 @@ impl Parser {
             }
         }
         self.expect(&Token::RBrace)?;
-        Ok(Stmt::ClassDef(ClassDef { name, name_span, parents, fields, methods, span }))
+        Ok(Stmt::ClassDef(ClassDef { name, name_span, mixins, fields, methods, span }))
     }
 
-    fn parse_trait(&mut self) -> Result<Stmt, ParseError> {
+    fn parse_mixin(&mut self) -> Result<Stmt, ParseError> {
         let span = self.peek_span();
-        self.expect(&Token::Trait)?;
+        self.expect(&Token::Mixin)?;
         let (name, name_span) = self.expect_ident_with_span()?;
         self.expect(&Token::LBrace)?;
         let mut requires = Vec::new();
@@ -309,7 +309,7 @@ impl Parser {
             }
         }
         self.expect(&Token::RBrace)?;
-        Ok(Stmt::TraitDef(TraitDef { name, name_span, requires, methods, span }))
+        Ok(Stmt::MixinDef(MixinDef { name, name_span, requires, methods, span }))
     }
 
     fn parse_throw(&mut self) -> Result<Stmt, ParseError> {
@@ -673,12 +673,12 @@ mod tests {
     }
 
     #[test]
-    fn test_trait_def() {
-        let stmts = parse(r#"trait Damageable {
+    fn test_mixin_def() {
+        let stmts = parse(r#"mixin Damageable {
             require hp: number
             fn damage(mut self, val: number) { self.hp -= val }
         }"#);
-        assert!(matches!(stmts[0], Stmt::TraitDef(_)));
+        assert!(matches!(stmts[0], Stmt::MixinDef(_)));
     }
 
     #[test]

@@ -9,9 +9,8 @@ pub fn get_hover(source: &str, position: Position) -> Option<Hover> {
     let cursor_name = ident_at_position(source, position)?;
     let table = build_table(source)?;
 
-    // 优先：光标在定义处
+    // 优先：光标在定义处；回退：光标在使用处，按名字查找
     let entry = table.lookup_at(position)
-        // 回退：光标在使用处，按名字查找
         .or_else(|| table.lookup_by_name(&cursor_name))?;
 
     Some(Hover {
@@ -51,11 +50,11 @@ fn render_hover(info: &SymbolInfo) -> String {
             let ret = opt_type_colon(ret_type.as_ref());
             format!("```nb\n{}fn {}({}){}{}\n```", async_kw, name, params_str, ret, throws_kw)
         }
-        SymbolInfo::Class { name, parents, fields, methods } => {
-            let extends = if parents.is_empty() {
+        SymbolInfo::Class { name, mixins, fields, methods } => {
+            let extends = if mixins.is_empty() {
                 String::new()
             } else {
-                format!(" extends {}", parents.join(", "))
+                format!(": {}", mixins.join(", "))
             };
             let mut lines = vec![format!("```nb\nclass {}{}", name, extends)];
             for f in fields {
@@ -70,8 +69,8 @@ fn render_hover(info: &SymbolInfo) -> String {
             lines.push("```".into());
             lines.join("\n")
         }
-        SymbolInfo::Trait { name, requires, methods } => {
-            let mut lines = vec![format!("```nb\ntrait {}", name)];
+        SymbolInfo::Mixin { name, requires, methods } => {
+            let mut lines = vec![format!("```nb\nmixin {}", name)];
             for r in requires {
                 lines.push(format!("  {}{}", r.name, opt_type(r.type_ann.as_ref())));
             }

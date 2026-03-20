@@ -12,7 +12,7 @@ print(x)
 fn add(a, b) {
     return a + b
 }
-print(add(3, 4))
+pri nt(add(3, 4))
 
 // 数组
 let mut arr = [1, 2, 3, 4, 5]
