@@ -2,9 +2,6 @@ mod compiler;
 mod vm;
 mod stdlib;
 
-use std::path::Path;
-use nb_core::lexer::Lexer;
-use nb_core::parser::Parser;
 use vm::Interpreter;
 
 fn main() {
@@ -26,31 +23,39 @@ fn main() {
 }
 
 fn run_file(path: &str) {
-    let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
+    let path_buf = std::path::Path::new(path);
+    let source = std::fs::read_to_string(path_buf).unwrap_or_else(|e| {
         eprintln!("无法读取文件 '{path}': {e}");
         std::process::exit(1);
     });
 
     // 取文件名（不含扩展名）作为模块名
-    let module_name = Path::new(path)
+    let module_name = path_buf
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("main");
 
+    // 当前文件所在目录（绝对路径）
+    let current_dir = path_buf.canonicalize()
+        .unwrap_or_else(|_| path_buf.to_path_buf())
+        .parent()
+        .unwrap_or(path_buf)
+        .to_path_buf();
+
     // Lex
-    let tokens = Lexer::new(&source).tokenize().unwrap_or_else(|e| {
+    let tokens = nb_core::lexer::Lexer::new(&source).tokenize().unwrap_or_else(|e| {
         eprintln!("词法错误: {e}");
         std::process::exit(1);
     });
 
     // Parse
-    let stmts = Parser::new(tokens).parse_program().unwrap_or_else(|e| {
+    let stmts = nb_core::parser::Parser::new(tokens).parse_program().unwrap_or_else(|e| {
         eprintln!("语法错误: {e}");
         std::process::exit(1);
     });
 
     // Interpret
-    let mut interp = Interpreter::new(module_name);
+    let mut interp = Interpreter::new_with_dir(module_name, current_dir);
     if let Err(e) = interp.run(&stmts) {
         eprintln!("运行时错误: {e}");
         std::process::exit(1);

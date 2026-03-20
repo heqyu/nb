@@ -1,6 +1,7 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use indexmap::IndexMap;
 
@@ -301,6 +302,12 @@ impl From<ControlFlow> for RuntimeError {
 pub struct Interpreter {
     pub global: Rc<RefCell<Env>>,
     pub module_name: String,
+    /// 当前文件的绝对路径（用于解析相对 require 路径）
+    pub current_dir: PathBuf,
+    /// 模块缓存：绝对路径 → 已导出的 dict（共享，避免重复加载）
+    pub module_cache: Rc<RefCell<HashMap<PathBuf, Value>>>,
+    /// 正在加载中的模块集合（用于循环依赖检测）
+    pub loading: Rc<RefCell<HashSet<PathBuf>>>,
 }
 
 type ExecResult = Result<Option<ControlFlow>, RuntimeError>;
@@ -308,10 +315,36 @@ type EvalResult = Result<Value, RuntimeError>;
 
 impl Interpreter {
     pub fn new(module_name: &str) -> Self {
+        Self::new_with_context(
+            module_name,
+            std::env::current_dir().unwrap_or_default(),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashSet::new())),
+        )
+    }
+
+    pub fn new_with_dir(module_name: &str, dir: PathBuf) -> Self {
+        Self::new_with_context(
+            module_name,
+            dir,
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashSet::new())),
+        )
+    }
+
+    fn new_with_context(
+        module_name: &str,
+        current_dir: PathBuf,
+        module_cache: Rc<RefCell<HashMap<PathBuf, Value>>>,
+        loading: Rc<RefCell<HashSet<PathBuf>>>,
+    ) -> Self {
         let global = Rc::new(RefCell::new(Env::new()));
         let mut interp = Self {
             global: global.clone(),
             module_name: module_name.to_string(),
+            current_dir,
+            module_cache,
+            loading,
         };
         crate::stdlib::register(&mut interp);
         interp
@@ -753,6 +786,20 @@ impl Interpreter {
             }
 
             Expr::Call { callee, args, .. } => {
+                // 拦截 require("./path") — 需要访问 &mut self，不能用 NativeFunction
+                if let Expr::Ident(name, _) = callee.as_ref() {
+                    if name == "require" {
+                        let path_val = args.first()
+                            .map(|a| self.eval(&a.expr, env.clone()))
+                            .transpose()?
+                            .unwrap_or(Value::Nil);
+                        let path_str = match &path_val {
+                            Value::Str(s) => s.as_ref().clone(),
+                            _ => return Err(RuntimeError::new("require 参数必须是字符串")),
+                        };
+                        return self.eval_require(&path_str);
+                    }
+                }
                 // 特殊处理方法调用：obj.method(args)
                 if let Expr::Field { obj, field, .. } = callee.as_ref() {
                     let obj_val = self.eval(obj, env.clone())?;
@@ -1025,9 +1072,99 @@ impl Interpreter {
             }
             Value::Str(s) => self.string_method(s.clone(), field, env),
             Value::Array(arr) => self.array_method(arr.clone(), field, env),
-            Value::Dict(dict) => self.dict_method(dict.clone(), field, env),
+            Value::Dict(dict) => {
+                // 先查 dict 里的 key
+                let key = ValueKey::Str(field.to_string());
+                if let Some(v) = dict.borrow().get(&key).cloned() {
+                    return Ok(v);
+                }
+                // 再走内置 dict 方法
+                self.dict_method(dict.clone(), field, env)
+            }
             _ => Err(RuntimeError::new(format!("无法访问 {} 的字段 '{field}'", obj.type_name()))),
         }
+    }
+
+    // ── require 模块加载 ──
+
+    fn eval_require(&mut self, path: &str) -> EvalResult {
+        use nb_core::lexer::Lexer;
+        use nb_core::parser::Parser;
+
+        // 解析路径：@std.xxx 标准库（暂未实现），./相对路径
+        if path.starts_with('@') {
+            return Err(RuntimeError::new(format!("标准库模块 '{path}' 尚未实现")));
+        }
+
+        // 解析为绝对路径，支持省略 .nb 后缀
+        let raw = self.current_dir.join(path);
+        let abs = if raw.extension().is_some() {
+            raw.canonicalize()
+        } else {
+            raw.with_extension("nb").canonicalize()
+        }.map_err(|_| RuntimeError::new(format!("找不到模块 '{path}'")))?;
+
+        // 模块缓存命中
+        if let Some(cached) = self.module_cache.borrow().get(&abs).cloned() {
+            return Ok(cached);
+        }
+
+        // 循环依赖检测
+        if self.loading.borrow().contains(&abs) {
+            return Err(RuntimeError::new(format!("循环依赖: '{path}'")));
+        }
+        self.loading.borrow_mut().insert(abs.clone());
+
+        // 读取并解析源文件
+        let source = std::fs::read_to_string(&abs)
+            .map_err(|e| RuntimeError::new(format!("无法读取 '{path}': {e}")))?;
+        let tokens = Lexer::new(&source).tokenize()
+            .map_err(|e| RuntimeError::new(format!("词法错误 in '{path}': {e}")))?;
+        let stmts = Parser::new(tokens).parse_program()
+            .map_err(|e| RuntimeError::new(format!("语法错误 in '{path}': {e}")))?;
+
+        // 创建子解释器，共享缓存和 loading 集合
+        let module_name = abs.file_stem()
+            .and_then(|s| s.to_str()).unwrap_or("module").to_string();
+        let child_dir = abs.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let mut child = Interpreter::new_with_context(
+            &module_name,
+            child_dir,
+            self.module_cache.clone(),
+            self.loading.clone(),
+        );
+
+        // 执行模块
+        child.run(&stmts).map_err(|e| RuntimeError::new(format!("模块 '{path}' 错误: {e}")))?;
+
+        // 收集 export 列表
+        let exports = Self::collect_exports(&stmts, &child);
+
+        // 写入缓存，移出 loading
+        self.module_cache.borrow_mut().insert(abs.clone(), exports.clone());
+        self.loading.borrow_mut().remove(&abs);
+
+        Ok(exports)
+    }
+
+    /// 从已执行的模块中收集 export 声明的名字，返回 dict
+    fn collect_exports(stmts: &[Stmt], interp: &Interpreter) -> Value {
+        use nb_core::parser::ast::Stmt;
+        // 找最后一条 Export 语句
+        let export_names: Option<&Vec<String>> = stmts.iter().rev().find_map(|s| {
+            if let Stmt::Export(names) = s { Some(names) } else { None }
+        });
+
+        let map: IndexMap<ValueKey, Value> = match export_names {
+            Some(names) => {
+                names.iter().filter_map(|name| {
+                    let val = interp.global.borrow().get(name)?;
+                    Some((ValueKey::Str(name.clone()), val))
+                }).collect()
+            }
+            None => IndexMap::new(), // 无 export，返回空 dict
+        };
+        Value::Dict(Rc::new(RefCell::new(map)))
     }
 
     fn get_index(&mut self, obj: Value, idx: Value) -> EvalResult {

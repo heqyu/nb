@@ -1,0 +1,14 @@
+// 模块系统测试
+
+// 整体导入
+let math = require("./utils/math")
+print(math.add(3, 4))           // 7
+print(math.clamp(15, 0, 10))    // 10
+print(math.TAU)                 // 6.28318
+
+// 模块缓存：再次 require 不会重新执行
+let math2 = require("./utils/math")
+print(math2.add(1, 2))          // 3
+
+// 未 export 的名字不可访问
+print(math.clamp(15, 0, 10))    // 10（exported）

@@ -1,0 +1,11 @@
+fn clamp(val, lo, hi) {
+    return val < lo ? lo : (val > hi ? hi : val)
+}
+
+fn add(a, b) {
+    return a + b
+}
+
+let TAU = 6.28318
+
+export { clamp, add, TAU }

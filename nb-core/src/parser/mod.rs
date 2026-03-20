@@ -594,6 +594,12 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Ident("self".into(), span))
             }
+            // require("./path") 作为内置函数调用解析
+            Token::Require => {
+                let span = self.peek_span();
+                self.advance();
+                Ok(Expr::Ident("require".into(), span))
+            }
             Token::LParen => {
                 self.advance();
                 let e = self.parse_expr()?;
