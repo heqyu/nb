@@ -75,7 +75,6 @@ impl Parser {
         match self.peek().clone() {
             Token::Ident(s) => { self.advance(); Ok((s, span)) }
             Token::Self_    => { self.advance(); Ok(("self".into(), span)) }
-            Token::Super    => { self.advance(); Ok(("super".into(), span)) }
             _ => {
                 let (line, col) = self.peek_pos();
                 Err(ParseError::Unexpected {
@@ -594,11 +593,6 @@ impl Parser {
                 let span = self.peek_span();
                 self.advance();
                 Ok(Expr::Ident("self".into(), span))
-            }
-            Token::Super => {
-                let span = self.peek_span();
-                self.advance();
-                Ok(Expr::Ident("super".into(), span))
             }
             Token::LParen => {
                 self.advance();

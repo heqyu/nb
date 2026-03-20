@@ -460,22 +460,81 @@ async fn fetch(url: string): string throws {
 
 ## 12. 模块系统
 
-### 文件即模块
-- 顶层 `let` 为模块级变量
-- 用 `export {}` 在文件尾部声明导出（语法已支持，运行时暂无效果）
+### 设计原则
+- **文件即模块**：每个 `.nb` 文件是一个模块，模块名为文件名去掉扩展名
+- **显式导出**：非 main 文件必须用 `export { ... }` 声明对外暴露的名字；main 文件省略 export
+- **显式导入**：用 `require` 语句加载其他模块，支持路径和标准库两种形式
+- **无副作用导入**：`require` 只引入被显式 export 的名字，不会执行模块顶层语句的副作用（除非明确设计）
+
+### export
 
 ```nb
-// math_utils.nb
-let PI = 3.14159
-
+// math.nb
 fn add(a: number, b: number): number {
     return a + b
 }
 
-export { PI, add }
+fn _internal() { ... }   // 不在 export 列表，外部不可见
+
+let PI = 3.14159
+
+export { add, PI }
 ```
 
-> **当前状态：** `export` 语句解析正常，运行时跳过（模块加载系统待实现）。`require` 尚未实现。
+- `export` 写在文件末尾（惯例，非强制）
+- 只有出现在 `export { ... }` 中的名字才能被外部 `require`
+- 未写 `export` 的文件（如 main.nb）表示无需对外暴露
+
+### require
+
+```nb
+// 相对路径导入（相对于当前文件）
+let math = require("./math")
+let result = math.add(1, 2)
+print(math.PI)
+
+// 解构导入
+let { add, PI } = require("./math")
+print(add(1, 2))
+
+// 标准库导入（以 @ 开头）
+let fs   = require("@std.fs")
+let json = require("@std.json")
+```
+
+- `require` 是表达式，返回一个 dict，key 为 export 的名字
+- 解构导入是语法糖：`let { a, b } = require("./mod")`
+- 标准库路径以 `@` 开头，不带 `.nb` 后缀
+- 循环依赖：检测到循环依赖时报运行时错误
+
+### 路径规则
+- `"./foo"` 或 `"./foo.nb"` → 相对于当前文件的 `foo.nb`
+- `"../utils"` → 上级目录
+- `"@std.math"` → 内置标准库模块
+- 不支持裸名导入（如 `require("lodash")`），没有包管理器
+
+### 示例
+
+```nb
+// utils/math.nb
+fn clamp(val, lo, hi) {
+    return val < lo ? lo : (val > hi ? hi : val)
+}
+
+let TAU = 6.28318
+
+export { clamp, TAU }
+```
+
+```nb
+// main.nb
+let { clamp, TAU } = require("./utils/math")
+
+print(clamp(15, 0, 10))   // 10
+print(TAU)                // 6.28318
+```
+
+> **当前状态：** `export` 语句解析正常，运行时跳过。`require` 尚未实现。
 
 ---
 
@@ -633,7 +692,6 @@ string.format("{0} + {1} = {2}", a, b, a + b)
 - ⏳ 模块系统（`require` / `export`）
 - ⏳ 真正的 async/await（当前同步执行）
 - ⏳ `?` 错误传播（当前等价于直接求值）
-- ⏳ `super` 关键字（词法已支持，运行时未实现）
 - ⏳ 深层不可变（`let arr` 元素禁止修改）
 - ⏳ 标准库（`@std.fs` / `@std.io` / `@std.math` 等）
 - ⏳ `string(obj)` 自动调用 `to_string` 方法

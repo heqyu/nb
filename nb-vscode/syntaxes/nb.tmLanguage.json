@@ -81,7 +81,7 @@
         },
         {
           "name": "keyword.other.nb",
-          "match": "\\b(self|super|protect|async|await|export|require|throws)\\b"
+          "match": "\\b(self|protect|async|await|export|require|throws)\\b"
         },
         {
           "name": "constant.language.nb",

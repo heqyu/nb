@@ -21,7 +21,6 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("mixin",    "mixin ${1:Name} {\n\t$0\n}"),
     ("is",       "is"),
     ("self",     "self"),
-    ("super",    "super"),
     ("throw",    "throw $0"),
     ("protect",  "protect {\n\t$0\n}"),
     ("async",    "async"),
