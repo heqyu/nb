@@ -8,7 +8,10 @@ use crate::completion::get_completions;
 use crate::diagnostics::get_diagnostics;
 use crate::goto_def::get_definition;
 use crate::hover::get_hover;
+use crate::references::get_references;
+use crate::rename::get_rename;
 use crate::semantic::{get_semantic_tokens, semantic_token_legend};
+use crate::signature::get_signature_help;
 use crate::symbols::get_document_symbols;
 
 pub struct Backend {
@@ -26,13 +29,9 @@ impl Backend {
     }
 
     async fn on_change(&self, uri: Url, text: String) {
-        // 缓存文档
         self.documents.insert(uri.to_string(), text.clone());
-        // 生成诊断并推送
         let diagnostics = get_diagnostics(&text);
-        self.client
-            .publish_diagnostics(uri, diagnostics, None)
-            .await;
+        self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 }
 
@@ -62,9 +61,19 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 // Go to Definition
                 definition_provider: Some(OneOf::Left(true)),
+                // Find References
+                references_provider: Some(OneOf::Left(true)),
+                // Rename
+                rename_provider: Some(OneOf::Left(true)),
+                // Signature Help（触发字符：'(' 和 ','）
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into()]),
+                    retrigger_characters: Some(vec![",".into()]),
+                    work_done_progress_options: Default::default(),
+                }),
                 // 代码补全
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".into(), ":".into()]),
+                    trigger_characters: Some(vec![".".into()]),
                     resolve_provider: Some(false),
                     ..Default::default()
                 }),
@@ -92,7 +101,6 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
-        // FULL 模式，取最后一个 change 的完整文本
         if let Some(change) = params.content_changes.pop() {
             self.on_change(params.text_document.uri, change.text).await;
         }
@@ -100,7 +108,6 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         self.documents.remove(&params.text_document.uri.to_string());
-        // 清除诊断
         self.client
             .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
@@ -135,11 +142,35 @@ impl LanguageServer for Backend {
         }
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let pos = params.text_document_position.position;
+        if let Some(source) = self.documents.get(&uri.to_string()) {
+            let locs = get_references(&source, &uri, pos);
+            Ok(if locs.is_empty() { None } else { Some(locs) })
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = params.text_document_position_params.text_document.uri.to_string();
         let pos = params.text_document_position_params.position;
         if let Some(source) = self.documents.get(&uri) {
             Ok(get_hover(&source, pos))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn signature_help(
+        &self,
+        params: SignatureHelpParams,
+    ) -> Result<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let pos = params.text_document_position_params.position;
+        if let Some(source) = self.documents.get(&uri) {
+            Ok(get_signature_help(&source, pos))
         } else {
             Ok(None)
         }
@@ -167,6 +198,17 @@ impl LanguageServer for Backend {
         if let Some(source) = self.documents.get(&uri) {
             let items = get_completions(&source, pos);
             Ok(Some(CompletionResponse::Array(items)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri.clone();
+        let pos = params.text_document_position.position;
+        let new_name = &params.new_name;
+        if let Some(source) = self.documents.get(&uri.to_string()) {
+            Ok(get_rename(&source, &uri, pos, new_name))
         } else {
             Ok(None)
         }

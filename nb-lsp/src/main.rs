@@ -5,6 +5,9 @@ mod symbols;
 mod hover;
 mod goto_def;
 mod completion;
+mod references;
+mod signature;
+mod rename;
 mod backend;
 
 use tower_lsp::{LspService, Server};
