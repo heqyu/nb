@@ -560,11 +560,45 @@ pub fn span_at_position(source: &str, pos: tower_lsp::lsp_types::Position) -> Op
     let target_line = (pos.line + 1) as usize;
     let target_col  = (pos.character + 1) as usize;
     for twp in &tokens {
-        if twp.line != target_line { continue; }
-        if let nb_core::lexer::Token::Ident(name) = &twp.token {
-            let end = twp.col + name.len();
-            if target_col >= twp.col && target_col <= end {
-                return Some(Span::new(twp.line, twp.col));
+        // ── 普通 Ident ───────────────────────────────────────────────────────
+        if twp.line == target_line {
+            if let nb_core::lexer::Token::Ident(name) = &twp.token {
+                let end = twp.col + name.len();
+                if target_col >= twp.col && target_col <= end {
+                    return Some(Span::new(twp.line, twp.col));
+                }
+            }
+        }
+
+        // ── 插值字符串：内部 ident 不在顶层 token 流，需单独处理 ───────────
+        if let nb_core::lexer::Token::InterpolatedString(parts) = &twp.token {
+            for part in parts {
+                if let nb_core::lexer::StringPart::Expr(src, start_line, start_col) = part {
+                    // 只有当插值片段可能覆盖目标行时才处理
+                    // （简化：单行插值 start_line == target_line）
+                    if *start_line != target_line { continue; }
+
+                    // 重新 tokenize 插值子串，用相同的偏移公式算绝对位置
+                    if let Ok(sub_tokens) = Lexer::new(src).tokenize() {
+                        for stwp in &sub_tokens {
+                            if let nb_core::lexer::Token::Ident(name) = &stwp.token {
+                                // 转换为绝对位置
+                                let abs_line = start_line + stwp.line - 1;
+                                let abs_col  = if stwp.line == 1 {
+                                    start_col + stwp.col - 1
+                                } else {
+                                    stwp.col
+                                };
+                                if abs_line == target_line {
+                                    let end = abs_col + name.len();
+                                    if target_col >= abs_col && target_col <= end {
+                                        return Some(Span::new(abs_line, abs_col));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
