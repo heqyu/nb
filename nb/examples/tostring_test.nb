@@ -1,0 +1,18 @@
+class Player {
+    name: string
+    mut hp: number
+}
+
+fn Player.to_string(self) {
+    return "Player(${self.name}, hp=${self.hp})"
+}
+
+let p = Player { name = "rex", hp = 100 }
+print(p)                    // Player(rex, hp=100)
+print(string(p))            // Player(rex, hp=100)
+print("player is: ${p}")    // player is: Player(rex, hp=100)
+
+// 没有 to_string 的 class 仍然输出 <ClassName>
+class Item { name: string }
+let item = Item { name = "sword" }
+print(item)                 // <Item>

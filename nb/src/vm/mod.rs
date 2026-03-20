@@ -696,7 +696,7 @@ impl Interpreter {
                         InterpPart::Literal(s) => result.push_str(s),
                         InterpPart::Expr(expr) => {
                             let val = self.eval(expr, env.clone())?;
-                            result.push_str(&format!("{val}"));
+                            result.push_str(&self.val_to_string(val)?);
                         }
                     }
                 }
@@ -786,18 +786,36 @@ impl Interpreter {
             }
 
             Expr::Call { callee, args, .. } => {
-                // 拦截 require("./path") — 需要访问 &mut self，不能用 NativeFunction
+                // 拦截需要访问 &mut self 的内置函数
                 if let Expr::Ident(name, _) = callee.as_ref() {
-                    if name == "require" {
-                        let path_val = args.first()
-                            .map(|a| self.eval(&a.expr, env.clone()))
-                            .transpose()?
-                            .unwrap_or(Value::Nil);
-                        let path_str = match &path_val {
-                            Value::Str(s) => s.as_ref().clone(),
-                            _ => return Err(RuntimeError::new("require 参数必须是字符串")),
-                        };
-                        return self.eval_require(&path_str);
+                    match name.as_str() {
+                        "require" => {
+                            let path_val = args.first()
+                                .map(|a| self.eval(&a.expr, env.clone()))
+                                .transpose()?
+                                .unwrap_or(Value::Nil);
+                            let path_str = match &path_val {
+                                Value::Str(s) => s.as_ref().clone(),
+                                _ => return Err(RuntimeError::new("require 参数必须是字符串")),
+                            };
+                            return self.eval_require(&path_str);
+                        }
+                        "print" => {
+                            let mut vals = Vec::new();
+                            for a in args { vals.push(self.eval(&a.expr, env.clone())?); }
+                            let mut parts = Vec::new();
+                            for v in vals { parts.push(self.val_to_string(v)?); }
+                            println!("{}", parts.join("\t"));
+                            return Ok(Value::Nil);
+                        }
+                        "string" => {
+                            let val = args.first()
+                                .map(|a| self.eval(&a.expr, env.clone()))
+                                .transpose()?
+                                .unwrap_or(Value::Nil);
+                            return self.val_to_string(val).map(|s| Value::Str(Rc::new(s)));
+                        }
+                        _ => {}
                     }
                 }
                 // 特殊处理方法调用：obj.method(args)
@@ -1083,6 +1101,19 @@ impl Interpreter {
             }
             _ => Err(RuntimeError::new(format!("无法访问 {} 的字段 '{field}'", obj.type_name()))),
         }
+    }
+
+    // ── val_to_string：调用 to_string 方法（如有），否则 Display ──
+
+    pub fn val_to_string(&mut self, val: Value) -> Result<String, RuntimeError> {
+        if let Value::Instance(ref inst_rc) = val {
+            let class = inst_rc.borrow().class.clone();
+            if let Some(method) = find_method(&class, "to_string") {
+                let result = self.call_function(&method, vec![], Some(val))?;
+                return Ok(format!("{result}"));
+            }
+        }
+        Ok(format!("{val}"))
     }
 
     // ── require 模块加载 ──
