@@ -1,33 +1,35 @@
--- 基础测试
+// 基础测试
 let name = "NB"
 print("hello ${name}!")
 
--- 数学
+
+// 数学
 let mut x = 10
 x += 5
 print(x)
 
--- 函数
+// 函数
 fn add(a, b) {
     return a + b
 }
 print(add(3, 4))
 
--- 数组
+// 数组
 let mut arr = [1, 2, 3, 4, 5]
 arr.push(6)
 print(len(arr))
 
--- for range
+// for range
 for i in 0..3 {
     print(i)
 }
 
--- class
+// class
 class Animal {
     name: string
     mut hp: number
     fn ctor(self, name, hp) {
+        print("ctor!!!!!!")
         self.name = name
         self.hp = hp
     }
@@ -39,7 +41,7 @@ class Animal {
 let mut a = new Animal("cat", 100)
 a.speak()
 
--- protect
+// protect
 let err, result = protect {
     return add(10, 20)
 }
@@ -49,18 +51,18 @@ if err != nil {
     print("result: ${result}")
 }
 
--- protect 捕获错误
+// protect 捕获错误
 let err2 = protect {
     throw "oops"
 }
 print("caught: ${err2}")
 
--- 三元运算
+// 三元运算
 let score = 85
 let grade = score >= 90 ? "A" : "B"
 print("grade: ${grade}")
 
--- 类型检查
+// 类型检查
 print(type(42))
 print(type("hello"))
 print(type(a))

@@ -1,0 +1,52 @@
+// sort 无参数（默认升序）
+let arr1 = [3, 1, 4, 1, 5, 9, 2, 6]
+let sorted1 = arr1.sort()
+print(sorted1.join(", "))
+
+// sort 带闭包（升序）
+let arr2 = [3, 1, 4, 1, 5, 9, 2, 6]
+let sorted2 = arr2.sort(fn(a, b) { return a - b })
+print(sorted2.join(", "))
+
+// sort 带闭包（降序）
+let arr3 = [3, 1, 4, 1, 5, 9, 2, 6]
+let sorted3 = arr3.sort(fn(a, b) { return b - a })
+print(sorted3.join(", "))
+
+// sort 字符串数组
+let words = ["banana", "apple", "cherry", "date"]
+let sorted_words = words.sort(fn(a, b) {
+    if a < b { return -1 }
+    if a > b { return 1 }
+    return 0
+})
+print(sorted_words.join(", "))
+
+// 闭包捕获外部变量
+let threshold = 5
+let big = [1, 8, 3, 9, 2, 7, 4, 6]
+let filtered = big.filter(fn(x) { return x > threshold })
+print(filtered.join(", "))
+
+// 闭包修改外部 mut 变量
+let mut total = 0
+let nums = [1, 2, 3, 4, 5]
+nums.map(fn(x) {
+    total = total + x
+    return x
+})
+print("total: ${total}")
+
+// 闭包遮蔽验证
+let x = 10
+let f = fn() { return x }
+let x = 20          // 遮蔽，新绑定
+print(f())          // 应该打印 10（捕获的是创建时的绑定）
+
+// sort + map + filter 链式
+let data = [5, 3, 8, 1, 9, 2, 7, 4, 6]
+let result = data
+    .filter(fn(x) { return x % 2 == 0 })
+    .sort(fn(a, b) { return b - a })
+    .map(fn(x) { return x * 10 })
+print(result.join(", "))

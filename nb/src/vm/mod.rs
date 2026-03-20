@@ -249,6 +249,11 @@ impl Env {
         }
         false
     }
+
+    /// 检查 name 是否在**当前**层 vars 中（不查父链），用于遮蔽检测
+    pub fn vars_has_local(&self, name: &str) -> bool {
+        self.vars.contains_key(name)
+    }
 }
 
 // ─────────────────────────────────────────
@@ -335,8 +340,23 @@ impl Interpreter {
     // ── 执行语句块 ──
 
     pub fn exec_block(&mut self, stmts: &[Stmt], env: Rc<RefCell<Env>>) -> ExecResult {
+        let mut cur_env = env;
         for stmt in stmts {
-            if let Some(cf) = self.exec_stmt(stmt, env.clone())? {
+            // 变量遮蔽检测：let/fn 在当前 scope 已有同名绑定时，创建子作用域
+            // 这样已捕获旧绑定的闭包不受影响
+            let shadow = match stmt {
+                Stmt::Let { name, .. } | Stmt::FnDef(FnDef { name: Some(name), .. }) => {
+                    cur_env.borrow().vars_has_local(name)
+                }
+                Stmt::MultiLet { names, .. } => {
+                    names.iter().any(|n| cur_env.borrow().vars_has_local(n))
+                }
+                _ => false,
+            };
+            if shadow {
+                cur_env = Rc::new(RefCell::new(Env::with_parent(cur_env)));
+            }
+            if let Some(cf) = self.exec_stmt(stmt, cur_env.clone())? {
                 return Ok(Some(cf));
             }
         }

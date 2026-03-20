@@ -162,15 +162,35 @@ impl Lexer {
 
     fn skip_whitespace_and_comments(&mut self) {
         loop {
+            // 跳过空白
             while let Some(c) = self.peek() {
                 if c.is_whitespace() { self.advance(); } else { break; }
             }
-            // 跳过单行注释 --
-            if self.peek() == Some('-') && self.peek_next() == Some('-') {
-                self.advance(); self.advance();
-                while let Some(c) = self.peek() {
-                    if c == '\n' { break; }
-                    self.advance();
+            if self.peek() == Some('/') {
+                match self.peek_next() {
+                    // 单行注释  // ...  或文档注释 /// ...（词法层面统一跳过）
+                    Some('/') => {
+                        self.advance(); self.advance();
+                        while let Some(c) = self.peek() {
+                            if c == '\n' { break; }
+                            self.advance();
+                        }
+                    }
+                    // 多行注释  /* ... */
+                    Some('*') => {
+                        self.advance(); self.advance(); // 消耗 /*
+                        loop {
+                            match self.peek() {
+                                None => break, // 未闭合，到 EOF 为止
+                                Some('*') if self.peek_next() == Some('/') => {
+                                    self.advance(); self.advance(); // 消耗 */
+                                    break;
+                                }
+                                _ => { self.advance(); }
+                            }
+                        }
+                    }
+                    _ => break,
                 }
             } else {
                 break;
@@ -441,8 +461,33 @@ mod tests {
 
     #[test]
     fn test_comment_skip() {
-        let tokens = lex("let x = 1 -- this is a comment\nlet y = 2");
+        // 单行注释
+        let tokens = lex("let x = 1 // this is a comment\nlet y = 2");
         assert_eq!(tokens.iter().filter(|t| **t == Token::Let).count(), 2);
+    }
+
+    #[test]
+    fn test_doc_comment_skip() {
+        // 文档注释（词法层等同单行注释）
+        let tokens = lex("/// doc comment\nlet x = 1");
+        assert!(tokens.contains(&Token::Let));
+    }
+
+    #[test]
+    fn test_block_comment_skip() {
+        // 多行注释
+        let tokens = lex("let x = /* ignore this */ 42");
+        assert_eq!(tokens, vec![
+            Token::Let, Token::Ident("x".into()), Token::Assign, Token::Number(42.0), Token::Eof
+        ]);
+    }
+
+    #[test]
+    fn test_multiline_block_comment() {
+        let tokens = lex("let x = /*\n  multi\n  line\n*/ 1");
+        assert_eq!(tokens, vec![
+            Token::Let, Token::Ident("x".into()), Token::Assign, Token::Number(1.0), Token::Eof
+        ]);
     }
 
     #[test]
