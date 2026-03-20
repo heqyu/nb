@@ -53,7 +53,7 @@ pub fn get_semantic_tokens(doc: &AnalyzedDoc) -> Vec<SemanticToken> {
                 Token::Let | Token::Mut | Token::Fn | Token::Return |
                 Token::If | Token::Else | Token::For | Token::While | Token::In |
                 Token::Break | Token::Continue | Token::Class | Token::Mixin |
-                Token::Is | Token::Self_ | Token::Super |
+                Token::Is | Token::Self_ |
                 Token::Throw | Token::Protect |
                 Token::Async | Token::Await | Token::Export | Token::Require |
                 Token::Throws | Token::Nil | Token::True | Token::False => {
@@ -264,7 +264,6 @@ fn token_keyword_str(tok: &Token) -> &'static str {
         Token::Mixin    => "mixin",
         Token::Is       => "is",
         Token::Self_    => "self",
-        Token::Super    => "super",
         Token::Throw    => "throw",
         Token::Protect  => "protect",
         Token::Async    => "async",
