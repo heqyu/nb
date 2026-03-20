@@ -18,7 +18,7 @@
 | `array` | 数组，`[]` 字面量 |
 | `dict` | 字典，`{}` 字面量 |
 | `class` | 类对象 |
-| `trait` | trait 对象 |
+| `mixin` | mixin 对象 |
 | `range` | 范围（仅用于 for 迭代） |
 
 ### 类型注解
@@ -48,7 +48,7 @@ let nested: dict<string, array<number>> = { a = [1,2,3] }
 ### 设计目标
 NB 引入 `mut` 的目的不是实现 Rust 式所有权系统，而是：
 
-> **显式标记“哪些变量可能被修改”，从而控制副作用的可见性**
+> **显式标记"哪些变量可能被修改"，从而控制副作用的可见性**
 
 ---
 
@@ -79,7 +79,7 @@ let MAX = 100
 
 ### 写操作定义
 
-以下行为被视为“写操作”，需要目标为 `mut` 变量：
+以下行为被视为"写操作"，需要目标为 `mut` 变量：
 
 1. 变量重新赋值：`x = expr`
 2. 数组元素赋值：`arr[i] = expr`
@@ -120,7 +120,7 @@ fn add(a: number, b: number): number {
 - 编译器会在调用点检查：传入的实参必须为 `mut` 变量
 - `mut` 不会在函数调用链中传播
 - `mut` 属于变量绑定，而非值本身
-- `mut` 仅用于控制“写权限”
+- `mut` 仅用于控制"写权限"
 - 不引入所有权、借用或生命周期
 
 不进行调用链传播
@@ -270,83 +270,99 @@ let s = string.format("{0} + {1} = {2}", a, b, a + b)
 
 ## 8. Class 系统
 
+### 设计原则
+- `class` 体内**只声明字段**，不包含方法
+- 方法定义在类外部，以 `fn ClassName.method(self, ...)` 的形式绑定
+- 实例通过**结构体字面量**创建，未指定字段默认为 `nil`
+- 无构造函数（`ctor`）、无 `static`、无 `new` 关键字
+
 ### 基本语法
 ```nb
 class Animal {
-    name: string        // 不可变字段，只能在 ctor 中赋值
+    name: string        // 不可变字段
     mut hp: number      // 可变字段
-
-    fn ctor(self, name: string, hp: number) {
-        self.name = name
-        self.hp = hp
-    }
-
-    fn speak(self): string {
-        return "${self.name} speaks"
-    }
-
-    fn take_damage(mut self, val: number) {
-        self.hp -= val
-    }
-
-    static fn create(name: string): Animal {
-        return new Animal(name, 100)
-    }
 }
 
-let mut a = new Animal("cat", 100)
+// 方法定义在类外
+fn Animal.speak(self): string {
+    return "${self.name} speaks"
+}
+
+fn Animal.take_damage(mut self, val: number) {
+    self.hp -= val
+}
+
+// 结构体字面量初始化（未指定字段默认 nil）
+let mut a = Animal { name = "cat", hp = 100 }
 a.take_damage(10)
 a.speak()
-Animal.create("dog")
 ```
 
-### 继承
-- 语法：`class Dog : Animal`
-- 父类构造函数**自动调用**（从最顶层祖先类开始，依次调用各级 ctor）
-- `super` 关键字已词法解析，运行时作为标识符处理（`super.method()` 暂不支持）
+### 字段规则
+- 字段在 class 体中预声明，类型注解可选
+- `mut` 修饰的字段可被方法或外部代码修改
+- 未在字面量中指定的字段自动初始化为 `nil`
+
+### 方法规则
+- `fn ClassName.method(self, ...)` 语法将函数绑定到类
+- `self` 显式声明（第一个参数）
+- `mut self` 表示该方法会修改实例，调用时实例必须为 `mut` 变量
+- 方法定义顺序不限，可在类定义之后任意位置
+
+### Mixin（混入）
+- 用 `mixin` 关键字定义，提供可复用的方法集合
+- `require` 声明依赖字段（文档性质，运行时不强制）
+- class 通过 `: MixinName` 继承 mixin 的方法
+- 支持多 mixin：`class Player : Mixin1, Mixin2`
+- 同名方法：class 自身方法优先，其次按 mixin 列表顺序
 
 ```nb
-class Dog : Animal {
-    mut breed: string
+mixin Damageable {
+    require hp: number
 
-    fn ctor(self, name: string, hp: number, breed: string) {
-        // 父类 ctor 自动调用，无需手动
-        self.breed = breed
+    fn damage(mut self, val) {
+        self.hp = self.hp - val
+    }
+
+    fn is_dead(self) {
+        return self.hp <= 0
     }
 }
-```
 
-### 规则
-- 字段需要**预声明**（在 class 体中声明后，实例创建时自动初始化为 `nil`）
-- 所有字段应在 ctor 中初始化，否则默认为 `nil`
-- 约定 `_` 前缀表示私有，无访问控制关键字
-- `self` 显式声明（第一个参数）
-- `mut self` 表示该方法会修改实例
-- 调用该方法时，实例必须是 `mut` 变量
-- 支持多继承：`class Player : Entity, Damageable`（父类和 trait 混合列表）
-- `is` 关键字检查类型，支持继承链和 trait
+class Player : Damageable {
+    name: string
+    mut hp: number
+    mut level: number
+}
 
-```nb
-let d = new Dog("rex", 100, "husky")
-d is Dog        // true
-d is Animal     // true（继承链）
+fn Player.level_up(mut self) {
+    self.level = self.level + 1
+}
+
+let mut p = Player { name = "rex", hp = 100, level = 1 }
+p.level_up()
+p.damage(30)
+p.is_dead()
+p is Player      // true
+p is Damageable  // true
 ```
 
 ### `to_string` 方法
-- class 可实现 `to_string` 方法，`string()` 内置函数会调用它
-- **当前实现**：`print` 直接使用 Display，`string()` 调用 `format!("{v}")`，均输出 `<类名>` 形式；若需调用 `to_string`，需通过 `string(obj)` 并在方法中返回字符串
+- class 可定义 `fn ClassName.to_string(self): string` 方法
+- `string()` 内置函数会调用它
+- **当前实现**：`print` 直接输出 `<类名>` 形式；`string(obj)` 调用 `format!("{v}")`，均输出 `<类名>`；若需自定义字符串表示，通过 `string(obj)` 调用 `to_string` 方法
 
 ---
 
-## 9. Trait 系统
+## 9. Mixin 系统
 
-- 用 `trait` 关键字定义
-- trait **不能直接实例化**
-- trait 用 `require` 声明依赖字段（仅作为文档声明，运行时不强制检查）
-- trait 中的方法会被 class 继承
+- 用 `mixin` 关键字定义
+- mixin **不能直接实例化**
+- `require` 声明依赖字段（仅作为文档声明，运行时不强制检查）
+- mixin 中的方法会被混入 class
 
 ```nb
-trait Damageable {
+mixin Damageable {
     require hp: number
 
     fn damage(mut self, val) {
@@ -360,13 +376,13 @@ trait Damageable {
 
 class Player : Entity, Damageable {
     mut level: number
-
-    fn ctor(self, name, hp) {
-        self.level = 1
-    }
 }
 
-let mut p = new Player("rex", 100)
+fn Player.ctor(mut self, name, hp) {
+    self.level = 1
+}
+
+let mut p = Player { name = "rex", hp = 100, level = 1 }
 p.damage(30)
 p.is_dead()
 p is Damageable     // true
@@ -408,7 +424,7 @@ protect {
 
 ```nb
 throw "something went wrong"
-throw new NetworkError("timeout", 408)
+throw NetworkError { code = 408, msg = "timeout" }
 ```
 
 ### ? 错误传播
@@ -528,8 +544,8 @@ type(fn(){})            // "function"
 type([1,2,3])           // "array"
 type({a=1})             // "dict"
 type(Animal)            // "class"
-type(Damageable)        // "trait"
-type(new Animal())      // "模块名.Animal"   全限定名（模块名取自文件名去扩展名）
+type(Damageable)        // "mixin"
+type(Animal { hp = 1 }) // "模块名.Animal"   全限定名（模块名取自文件名去扩展名）
 ```
 
 ### string() / print()
@@ -601,9 +617,10 @@ string.format("{0} + {1} = {2}", a, b, a + b)
 - ✅ 多返回值 / `let a, b = expr`
 - ✅ 控制流：if/else、for/while、break/continue
 - ✅ for 迭代：range、array、dict、string
-- ✅ Class 定义、继承、静态方法
-- ✅ Trait 定义与混入
-- ✅ `is` 类型检查（含继承链）
+- ✅ Class 定义（纯字段）+ Mixin 混入
+- ✅ 外部方法绑定：`fn ClassName.method(self, ...)`
+- ✅ 结构体字面量初始化：`ClassName { field = val, ... }`
+- ✅ `is` 类型检查（含 mixin 链）
 - ✅ protect 错误捕获
 - ✅ throw 抛出错误
 - ✅ 字符串插值（`${expr}`）
@@ -616,7 +633,7 @@ string.format("{0} + {1} = {2}", a, b, a + b)
 - ⏳ 模块系统（`require` / `export`）
 - ⏳ 真正的 async/await（当前同步执行）
 - ⏳ `?` 错误传播（当前等价于直接求值）
-- ⏳ `super.method()` 调用父类方法
+- ⏳ `super` 关键字（词法已支持，运行时未实现）
 - ⏳ 深层不可变（`let arr` 元素禁止修改）
 - ⏳ 标准库（`@std.fs` / `@std.io` / `@std.math` 等）
 - ⏳ `string(obj)` 自动调用 `to_string` 方法
@@ -693,54 +710,43 @@ d.merge({ extra = 4 })  // 合并另一个 dict，返回新 dict（不修改原 
 
 ```nb
 // advanced.nb
-trait Damageable {
+
+mixin Damageable {
     require hp: number
+
     fn damage(mut self, val) {
         self.hp = self.hp - val
     }
+
     fn is_dead(self) {
         return self.hp <= 0
     }
 }
 
-class Entity {
+// class 只声明字段
+class Player : Damageable {
     name: string
     mut hp: number
-    fn ctor(self, name, hp) {
-        self.name = name
-        self.hp = hp
-    }
-    fn to_string(self) {
-        return "${self.name}(hp=${self.hp})"
-    }
-}
-
-class Player : Entity, Damageable {
     mut level: number
-    fn ctor(self, name, hp) {
-        self.level = 1
-    }
-    fn level_up(mut self) {
-        self.level = self.level + 1
-    }
 }
 
-let mut p = new Player("rex", 100)
+// 方法定义在类外
+fn Player.level_up(mut self) {
+    self.level = self.level + 1
+}
+
+fn Player.to_string(self) {
+    return "${self.name}(hp=${self.hp}, lv=${self.level})"
+}
+
+// 结构体字面量初始化
+let mut p = Player { name = "rex", hp = 100, level = 1 }
 p.level_up()
 p.damage(30)
 print(p.hp)         // 70
 print(p.is_dead())  // false
 print(p is Player)  // true
-print(p is Entity)  // true
 print(p is Damageable)  // true
-
-// 静态方法
-class MathHelper {
-    static fn add(a, b) {
-        return a + b
-    }
-}
-print(MathHelper.add(3, 7))     // 10
 
 // array 方法链
 let data = [5, 3, 8, 1, 9, 2, 7, 4, 6]

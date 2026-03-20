@@ -15,11 +15,13 @@ pub enum ParseError {
 pub struct Parser {
     tokens: Vec<TokenWithPos>,
     pos: usize,
+    /// 禁止在当前表达式中解析 struct literal（用于 if/while/for 条件）
+    no_struct_lit: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<TokenWithPos>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, no_struct_lit: false }
     }
 
     /// 公开给 vm 用于解析字符串插值表达式
@@ -166,13 +168,20 @@ impl Parser {
     fn parse_fn_def(&mut self, async_: bool) -> Result<FnDef, ParseError> {
         let span = self.peek_span();
         self.expect(&Token::Fn)?;
-        let (name, name_span) = match self.peek().clone() {
+        // 解析函数名，可能带 receiver：fn Player.method 或 fn name 或匿名
+        let (receiver, name, name_span) = match self.peek().clone() {
             Token::Ident(s) => {
                 let s_span = self.peek_span();
                 self.advance();
-                (Some(s), s_span)
+                // 检查是否是 receiver.method 形式
+                if self.eat(&Token::Dot) {
+                    let (method, method_span) = self.expect_ident_with_span()?;
+                    (Some(s), Some(method), method_span)
+                } else {
+                    (None, Some(s), s_span)
+                }
             }
-            _ => (None, span),  // 匿名函数，name_span 指向 fn 关键字
+            _ => (None, None, span),  // 匿名函数
         };
         self.expect(&Token::LParen)?;
         let params = self.parse_params()?;
@@ -180,7 +189,7 @@ impl Parser {
         let ret_type = if self.eat(&Token::Colon) { Some(self.parse_type_ann()?) } else { None };
         let throws = self.eat(&Token::Throws);
         let body = self.parse_block()?;
-        Ok(FnDef { name, name_span, async_, params, ret_type, throws, body, span })
+        Ok(FnDef { name, name_span, receiver, async_, params, ret_type, throws, body, span })
     }
 
     fn parse_async_fn(&mut self) -> Result<Stmt, ParseError> {
@@ -213,14 +222,14 @@ impl Parser {
     fn parse_if(&mut self) -> Result<Stmt, ParseError> {
         let span = self.peek_span();
         self.expect(&Token::If)?;
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_no_struct_lit()?;
         let then_body = self.parse_block()?;
         let mut else_ifs = Vec::new();
         let mut else_body = None;
         while self.eat(&Token::Else) {
             if self.check(&Token::If) {
                 self.advance();
-                let c = self.parse_expr()?;
+                let c = self.parse_expr_no_struct_lit()?;
                 let b = self.parse_block()?;
                 else_ifs.push((c, b));
             } else {
@@ -239,12 +248,12 @@ impl Parser {
             let value_mutable = self.eat(&Token::Mut);
             let value = self.expect_ident()?;
             self.expect(&Token::In)?;
-            let iter = self.parse_expr()?;
+            let iter = self.parse_expr_no_struct_lit()?;
             let body = self.parse_block()?;
             Ok(Stmt::ForIn { key: first, value: Some(value), value_mutable, iter, body, span })
         } else {
             self.expect(&Token::In)?;
-            let iter = self.parse_expr()?;
+            let iter = self.parse_expr_no_struct_lit()?;
             let body = self.parse_block()?;
             Ok(Stmt::ForIn { key: first, value: None, value_mutable: false, iter, body, span })
         }
@@ -253,7 +262,7 @@ impl Parser {
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
         let span = self.peek_span();
         self.expect(&Token::While)?;
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_no_struct_lit()?;
         let body = self.parse_block()?;
         Ok(Stmt::While { cond, body, span })
     }
@@ -271,22 +280,14 @@ impl Parser {
         }
         self.expect(&Token::LBrace)?;
         let mut fields = Vec::new();
-        let mut methods = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_eof() {
-            let static_ = self.eat(&Token::Static);
-            if self.check(&Token::Fn) || self.check(&Token::Async) {
-                let async_ = self.eat(&Token::Async);
-                let f = self.parse_fn_def(async_)?;
-                methods.push(MethodDef { static_, fn_def: f });
-            } else {
-                let mutable = self.eat(&Token::Mut);
-                let (fname, fname_span) = self.expect_ident_with_span()?;
-                let type_ann = if self.eat(&Token::Colon) { Some(self.parse_type_ann()?) } else { None };
-                fields.push(FieldDef { name: fname, name_span: fname_span, mutable, type_ann });
-            }
+            let mutable = self.eat(&Token::Mut);
+            let (fname, fname_span) = self.expect_ident_with_span()?;
+            let type_ann = if self.eat(&Token::Colon) { Some(self.parse_type_ann()?) } else { None };
+            fields.push(FieldDef { name: fname, name_span: fname_span, mutable, type_ann });
         }
         self.expect(&Token::RBrace)?;
-        Ok(Stmt::ClassDef(ClassDef { name, name_span, mixins, fields, methods, span }))
+        Ok(Stmt::ClassDef(ClassDef { name, name_span, mixins, fields, span }))
     }
 
     fn parse_mixin(&mut self) -> Result<Stmt, ParseError> {
@@ -330,6 +331,7 @@ impl Parser {
     }
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let (line, col) = self.peek_pos();
         let mut expr = self.parse_expr()?;
         // 后缀 ? 只在语句层面处理（避免和三元 ? 冲突）
         if self.eat(&Token::Question) {
@@ -343,7 +345,23 @@ impl Parser {
             Token::SlashAssign => { self.advance(); let v = self.parse_expr()?; Ok(Stmt::CompoundAssign { target: expr, op: BinOp::Div, value: v }) }
             Token::PlusPlus    => { self.advance(); Ok(Stmt::IncDec { target: expr, inc: true }) }
             Token::MinusMinus  => { self.advance(); Ok(Stmt::IncDec { target: expr, inc: false }) }
-            _                  => Ok(Stmt::Expr(expr))
+            _ => {
+                // 只有调用表达式、await、try(?) 才允许单独成语句
+                let valid = matches!(
+                    &expr,
+                    Expr::Call { .. } | Expr::Await(_) | Expr::Try(_)
+                );
+                if valid {
+                    Ok(Stmt::Expr(expr))
+                } else {
+                    Err(ParseError::Unexpected {
+                        expected: "赋值或函数调用".into(),
+                        got: format!("{:?}", self.peek()),
+                        line,
+                        col,
+                    })
+                }
+            }
         }
     }
 
@@ -358,6 +376,15 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> { self.parse_ternary() }
+
+    /// 在禁止 struct literal 的上下文中解析表达式（if/while/for 条件）
+    fn parse_expr_no_struct_lit(&mut self) -> Result<Expr, ParseError> {
+        let saved = self.no_struct_lit;
+        self.no_struct_lit = true;
+        let result = self.parse_ternary();
+        self.no_struct_lit = saved;
+        result
+    }
 
     fn parse_ternary(&mut self) -> Result<Expr, ParseError> {
         let expr = self.parse_range()?;
@@ -526,7 +553,13 @@ impl Parser {
             Token::Ident(s) => {
                 let span = self.peek_span();
                 self.advance();
-                Ok(Expr::Ident(s, span))
+                // ClassName { field = val, .. } 结构体字面量
+                // 在 if/while/for 条件中禁止解析，避免与语句块 { 歧义
+                if !self.no_struct_lit && self.check(&Token::LBrace) {
+                    self.parse_struct_lit(s, span)
+                } else {
+                    Ok(Expr::Ident(s, span))
+                }
             }
             Token::Self_ => {
                 let span = self.peek_span();
@@ -546,7 +579,6 @@ impl Parser {
             }
             Token::LBracket  => self.parse_array(),
             Token::LBrace    => self.parse_dict(),
-            Token::New       => self.parse_new(),
             Token::Fn        => { let f = self.parse_fn_def(false)?; Ok(Expr::Fn(Box::new(f))) }
             Token::Async     => { self.advance(); let f = self.parse_fn_def(true)?; Ok(Expr::Fn(Box::new(f))) }
             Token::Protect   => self.parse_protect(),
@@ -587,11 +619,18 @@ impl Parser {
         Ok(Expr::Dict(pairs))
     }
 
-    fn parse_new(&mut self) -> Result<Expr, ParseError> {
-        self.expect(&Token::New)?;
-        let (class, class_span) = self.expect_ident_with_span()?;
-        let args = self.parse_call_args()?;
-        Ok(Expr::New { class, class_span, args })
+    fn parse_struct_lit(&mut self, class: String, class_span: Span) -> Result<Expr, ParseError> {
+        self.expect(&Token::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_eof() {
+            let (fname, fname_span) = self.expect_ident_with_span()?;
+            self.expect(&Token::Assign)?;
+            let val = self.parse_expr()?;
+            fields.push((fname, fname_span, val));
+            if !self.eat(&Token::Comma) { break; }
+        }
+        self.expect(&Token::RBrace)?;
+        Ok(Expr::StructLit { class, class_span, fields })
     }
 
     fn parse_protect(&mut self) -> Result<Expr, ParseError> {
@@ -667,7 +706,6 @@ mod tests {
         let stmts = parse(r#"class Animal {
             name: string
             mut hp: number
-            fn ctor(self, name: string) { self.name = name }
         }"#);
         assert!(matches!(stmts[0], Stmt::ClassDef(_)));
     }
@@ -688,9 +726,20 @@ mod tests {
     }
 
     #[test]
-    fn test_new() {
-        let stmts = parse(r#"let x = new Animal("cat", 100)"#);
+    fn test_struct_lit() {
+        let stmts = parse(r#"let x = Animal { name = "cat", hp = 100 }"#);
         assert!(matches!(stmts[0], Stmt::Let { .. }));
+    }
+
+    #[test]
+    fn test_method_receiver() {
+        let stmts = parse(r#"fn Animal.speak(self) { return "roar" }"#);
+        if let Stmt::FnDef(f) = &stmts[0] {
+            assert_eq!(f.receiver, Some("Animal".into()));
+            assert_eq!(f.name, Some("speak".into()));
+        } else {
+            panic!("应该是 FnDef");
+        }
     }
 
     #[test]

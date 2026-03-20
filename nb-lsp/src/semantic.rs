@@ -52,8 +52,8 @@ pub fn get_semantic_tokens(source: &str) -> Vec<SemanticToken> {
                 Token::Let | Token::Mut | Token::Fn | Token::Return |
                 Token::If | Token::Else | Token::For | Token::While | Token::In |
                 Token::Break | Token::Continue | Token::Class | Token::Mixin |
-                Token::New | Token::Is | Token::Self_ | Token::Super |
-                Token::Static | Token::Throw | Token::Protect |
+                Token::Is | Token::Self_ | Token::Super |
+                Token::Throw | Token::Protect |
                 Token::Async | Token::Await | Token::Export | Token::Require |
                 Token::Throws | Token::Nil | Token::True | Token::False => {
                     let kw = token_keyword_str(&twp.token);
@@ -110,9 +110,6 @@ fn collect_stmt_tokens(stmt: &Stmt, out: &mut Vec<RawToken>) {
             out.push(span_token(&cd.name_span, cd.name.len() as u32, TOKEN_TYPE_CLASS));
             for field in &cd.fields {
                 out.push(span_token(&field.name_span, field.name.len() as u32, TOKEN_TYPE_VARIABLE));
-            }
-            for method in &cd.methods {
-                collect_fndef_tokens(&method.fn_def, out);
             }
         }
         Stmt::MixinDef(md) => {
@@ -185,9 +182,9 @@ fn collect_expr_tokens(expr: &Expr, out: &mut Vec<RawToken>) {
             collect_expr_tokens(obj, out);
             out.push(span_token(field_span, field.len() as u32, TOKEN_TYPE_VARIABLE));
         }
-        Expr::New { class_span, class, args, .. } => {
+        Expr::StructLit { class_span, class, fields, .. } => {
             out.push(span_token(class_span, class.len() as u32, TOKEN_TYPE_CLASS));
-            for arg in args { collect_expr_tokens(&arg.expr, out); }
+            for (_, _, val) in fields { collect_expr_tokens(val, out); }
         }
         Expr::BinOp { left, right, .. } => {
             collect_expr_tokens(left, out);
@@ -269,11 +266,9 @@ fn token_keyword_str(tok: &Token) -> &'static str {
         Token::Continue => "continue",
         Token::Class    => "class",
         Token::Mixin    => "mixin",
-        Token::New      => "new",
         Token::Is       => "is",
         Token::Self_    => "self",
         Token::Super    => "super",
-        Token::Static   => "static",
         Token::Throw    => "throw",
         Token::Protect  => "protect",
         Token::Async    => "async",

@@ -44,8 +44,14 @@ fn collect_symbols(stmts: &[Stmt]) -> Vec<DocumentSymbol> {
 fn fndef_symbol(f: &FnDef) -> Option<DocumentSymbol> {
     let name = f.name.as_ref()?;
     let range = span_to_range(&f.name_span, name.len() as u32);
+    // receiver 函数显示为 "Player.method"
+    let display_name = if let Some(r) = &f.receiver {
+        format!("{}.{}", r, name)
+    } else {
+        name.clone()
+    };
     Some(make_symbol(
-        name.clone(),
+        display_name,
         Some(fn_signature(f)),
         SymbolKind::FUNCTION,
         range,
@@ -68,12 +74,6 @@ fn classdef_symbol(cd: &ClassDef) -> DocumentSymbol {
             r,
             None,
         ));
-    }
-    // 方法
-    for method in &cd.methods {
-        if let Some(sym) = fndef_symbol(&method.fn_def) {
-            children.push(sym);
-        }
     }
 
     let detail = if cd.mixins.is_empty() {

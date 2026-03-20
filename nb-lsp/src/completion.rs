@@ -20,11 +20,9 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("continue", "continue"),
     ("class",    "class ${1:Name} {\n\t$0\n}"),
     ("mixin",    "mixin ${1:Name} {\n\t$0\n}"),
-    ("new",      "new ${1:Class}($0)"),
     ("is",       "is"),
     ("self",     "self"),
     ("super",    "super"),
-    ("static",   "static"),
     ("throw",    "throw $0"),
     ("protect",  "protect {\n\t$0\n}"),
     ("async",    "async"),
@@ -42,8 +40,8 @@ const KEYWORDS: &[(&str, &str)] = &[
 struct ParsedDoc {
     /// 变量名 → 类名（通过 let x = new Foo(...) 推断）
     type_map: HashMap<String, String>,
-    /// 类名 → ClassDef
-    class_map: HashMap<String, ClassDef>,
+    /// 类名 → (ClassDef, receiver 方法列表)
+    class_map: HashMap<String, (ClassDef, Vec<FnDef>)>,
     /// mixin名 → MixinDef
     mixin_map: HashMap<String, MixinDef>,
     /// 所有顶层符号名（用于普通补全）
@@ -71,11 +69,12 @@ impl ParsedDoc {
         }
     }
 
+
     fn collect_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { name, value, type_ann, .. } => {
-                // 推断类型：let x = new Foo(...)
-                if let Some(Expr::New { class, .. }) = value {
+                // 推断类型：let x = ClassName { ... }
+                if let Some(Expr::StructLit { class, .. }) = value {
                     self.type_map.insert(name.clone(), class.clone());
                 }
                 let detail = type_ann.as_ref().map(type_ann_str);
@@ -83,11 +82,29 @@ impl ParsedDoc {
             }
             Stmt::FnDef(f) => {
                 if let Some(n) = &f.name {
-                    self.symbol_names.push((n.clone(), SymbolKind::FUNCTION, None));
+                    if let Some(receiver) = &f.receiver {
+                        // fn Player.method → 挂到对应 class 的方法列表
+                        self.class_map
+                            .entry(receiver.clone())
+                            .or_insert_with(|| (ClassDef {
+                                name: receiver.clone(),
+                                name_span: Default::default(),
+                                mixins: vec![],
+                                fields: vec![],
+                                span: Default::default(),
+                            }, vec![]))
+                            .1
+                            .push(f.clone());
+                    } else {
+                        self.symbol_names.push((n.clone(), SymbolKind::FUNCTION, None));
+                    }
                 }
             }
             Stmt::ClassDef(cd) => {
-                self.class_map.insert(cd.name.clone(), cd.clone());
+                let entry = self.class_map.entry(cd.name.clone())
+                    .or_insert_with(|| (cd.clone(), vec![]));
+                // 更新 ClassDef（可能之前只占位）
+                entry.0 = cd.clone();
                 self.symbol_names.push((cd.name.clone(), SymbolKind::CLASS, None));
             }
             Stmt::MixinDef(md) => {
@@ -162,11 +179,10 @@ fn member_completions(source: &str, obj_name: &str, prefix: &str) -> Vec<Complet
     };
 
     let Some(class_name) = class_name else {
-        // 类型未知，返回空（避免噪声）
         return vec![];
     };
 
-    let Some(cd) = doc.class_map.get(&class_name) else {
+    let Some((cd, receiver_methods)) = doc.class_map.get(&class_name) else {
         return vec![];
     };
 
@@ -185,13 +201,11 @@ fn member_completions(source: &str, obj_name: &str, prefix: &str) -> Vec<Complet
         }
     }
 
-    // ── 2. 类自身方法（sortText "2_name"，字段之后）
-    for method in &cd.methods {
-        if method.static_ { continue; }
-        let Some(name) = &method.fn_def.name else { continue };
-        if name == "ctor" { continue; }
+    // ── 2. 类自身方法 fn ClassName.method（sortText "2_name"）
+    for f in receiver_methods {
+        let Some(name) = &f.name else { continue };
         if name.starts_with(prefix) {
-            let mut item = fn_completion_item(name, &method.fn_def);
+            let mut item = fn_completion_item(name, f);
             item.sort_text = Some(format!("2_{}", name));
             items.push(item);
         }
@@ -202,11 +216,9 @@ fn member_completions(source: &str, obj_name: &str, prefix: &str) -> Vec<Complet
         if let Some(md) = doc.mixin_map.get(mixin_name) {
             for f in &md.methods {
                 let Some(name) = &f.name else { continue };
-                if name == "ctor" { continue; }
                 if name.starts_with(prefix) && !items.iter().any(|i| &i.label == name) {
                     let mut item = fn_completion_item(name, f);
                     item.sort_text = Some(format!("3_{}_{}", mixin_name, name));
-                    // detail 显示类型签名 + 来源 mixin
                     let sig = item.detail.map(|d| format!("{d}  •  {mixin_name}"))
                         .unwrap_or_else(|| format!("• {mixin_name}"));
                     item.detail = Some(sig);

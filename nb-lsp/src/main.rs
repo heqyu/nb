@@ -1,6 +1,7 @@
 mod diagnostics;
 mod semantic;
 mod symbol_table;
+mod resolution;
 mod symbols;
 mod hover;
 mod goto_def;

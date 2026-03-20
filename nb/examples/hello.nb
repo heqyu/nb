@@ -12,7 +12,7 @@ print(x)
 fn add(a, b) {
     return a + b
 }
-pri nt(add(3, 4))
+print(add(3, 4))
 
 // 数组
 let mut arr = [1, 2, 3, 4, 5]
@@ -25,24 +25,21 @@ for i in 0..3 {
 }
 
 for i, v in "hello"{
-    print(i,v)
+    print(i, v)
 }
 
-// class
+// class：只声明字段，方法定义在外部
 class Animal {
     name: string
     mut hp: number
-    fn ctor(self, name, hp) {
-        print("ctor!!!!!!")
-        self.name = name
-        self.hp = hp
-    }
-    fn speak(self) {
-        print("${self.name} says hello, hp=${self.hp}")
-    }
 }
 
-let mut a = new Animal("cat", 100)
+fn Animal.speak(self) {
+    print("${self.name} says hello, hp=${self.hp}")
+}
+
+// 结构体字面量初始化
+let mut a = Animal { name = "cat", hp = 100 }
 a.speak()
 
 // protect

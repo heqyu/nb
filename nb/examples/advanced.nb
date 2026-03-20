@@ -1,5 +1,5 @@
-// 测试 trait
-trait Damageable {
+// 测试 mixin
+mixin Damageable {
     require hp: number
     fn damage(mut self, val) {
         self.hp = self.hp - val
@@ -9,30 +9,24 @@ trait Damageable {
     }
 }
 
-// 测试 class 继承
-class Entity {
+// class 只含字段
+class Player : Damageable {
     name: string
     mut hp: number
-    fn ctor(self, name, hp) {
-        self.name = name
-        self.hp = hp
-    }
-    fn to_string(self) {
-        return "${self.name}(hp=${self.hp})"
-    }
-}
-
-class Player : Entity, Damageable {
     mut level: number
-    fn ctor(self, name, hp) {
-        self.level = 1
-    }
-    fn level_up(mut self) {
-        self.level = self.level + 1
-    }
 }
 
-let mut p = new Player("rex", 100)
+// 方法定义在类外
+fn Player.level_up(mut self) {
+    self.level = self.level + 1
+}
+
+fn Player.to_string(self) {
+    return "${self.name}(hp=${self.hp}, lv=${self.level})"
+}
+
+// 结构体字面量初始化
+let mut p = Player { name = "rex", hp = 100, level = 1 }
 print(p.name)
 print(p.hp)
 print(p.level)
@@ -46,16 +40,7 @@ print(p.is_dead())
 
 // is 检查
 print(p is Player)
-print(p is Entity)
 print(p is Damageable)
-
-// static 方法
-class MathHelper {
-    static fn add(a, b) {
-        return a + b
-    }
-}
-print(MathHelper.add(3, 7))
 
 // array 方法
 let mut arr = [3, 1, 4, 1, 5, 9, 2, 6]

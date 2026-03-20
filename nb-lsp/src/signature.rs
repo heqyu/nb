@@ -111,14 +111,7 @@ fn find_fndef_by_name<'a>(stmts: &'a [Stmt], name: &str) -> Option<&'a FnDef> {
 fn search_stmt<'a>(stmt: &'a Stmt, name: &str) -> Option<&'a FnDef> {
     match stmt {
         Stmt::FnDef(f) if f.name.as_deref() == Some(name) => Some(f),
-        Stmt::ClassDef(cd) => {
-            for m in &cd.methods {
-                if m.fn_def.name.as_deref() == Some(name) {
-                    return Some(&m.fn_def);
-                }
-            }
-            None
-        }
+        Stmt::ClassDef(_) => None,
         Stmt::MixinDef(md) => {
             for f in &md.methods {
                 if f.name.as_deref() == Some(name) {

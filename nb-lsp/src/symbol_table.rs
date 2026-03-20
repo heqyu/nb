@@ -11,8 +11,15 @@ pub enum SymbolInfo {
         mutable: bool,
         type_ann: Option<TypeAnnotation>,
     },
+    Field {
+        name: String,
+        class_name: String,
+        mutable: bool,
+        type_ann: Option<TypeAnnotation>,
+    },
     Function {
         name: String,
+        receiver: Option<String>,
         params: Vec<Param>,
         ret_type: Option<TypeAnnotation>,
         async_: bool,
@@ -22,7 +29,6 @@ pub enum SymbolInfo {
         name: String,
         mixins: Vec<String>,
         fields: Vec<FieldDef>,
-        methods: Vec<FnDef>,
     },
     Mixin {
         name: String,
@@ -40,6 +46,7 @@ impl SymbolInfo {
     pub fn name(&self) -> &str {
         match self {
             SymbolInfo::Variable  { name, .. } => name,
+            SymbolInfo::Field     { name, .. } => name,
             SymbolInfo::Function  { name, .. } => name,
             SymbolInfo::Class     { name, .. } => name,
             SymbolInfo::Mixin     { name, .. } => name,
@@ -108,18 +115,25 @@ fn collect_stmt(stmt: &Stmt, out: &mut Vec<SymbolEntry>) {
         }
         Stmt::FnDef(f) => collect_fndef(f, out),
         Stmt::ClassDef(cd) => {
-            let methods: Vec<FnDef> = cd.methods.iter().map(|m| m.fn_def.clone()).collect();
             out.push(SymbolEntry {
                 info: SymbolInfo::Class {
                     name: cd.name.clone(),
                     mixins: cd.mixins.clone(),
                     fields: cd.fields.clone(),
-                    methods,
                 },
                 def_span: cd.name_span,
             });
-            for m in &cd.methods {
-                collect_fndef(&m.fn_def, out);
+            // 把每个字段也注册进符号表，支持 goto-def
+            for field in &cd.fields {
+                out.push(SymbolEntry {
+                    info: SymbolInfo::Field {
+                        name: field.name.clone(),
+                        class_name: cd.name.clone(),
+                        mutable: field.mutable,
+                        type_ann: field.type_ann.clone(),
+                    },
+                    def_span: field.name_span,
+                });
             }
         }
         Stmt::MixinDef(md) => {
@@ -131,6 +145,7 @@ fn collect_stmt(stmt: &Stmt, out: &mut Vec<SymbolEntry>) {
                 },
                 def_span: md.name_span,
             });
+            // require 只是约束声明，不作为可跳转的定义注册
             for m in &md.methods {
                 collect_fndef(m, out);
             }
@@ -151,6 +166,7 @@ fn collect_fndef(f: &FnDef, out: &mut Vec<SymbolEntry>) {
         out.push(SymbolEntry {
             info: SymbolInfo::Function {
                 name: name.clone(),
+                receiver: f.receiver.clone(),
                 params: f.params.clone(),
                 ret_type: f.ret_type.clone(),
                 async_: f.async_,
@@ -202,11 +218,11 @@ pub fn build_table(source: &str) -> Option<SymbolTable> {
 
 /// span (AST 1-based) → LSP Range（0-based）
 pub fn span_to_lsp_range(span: &Span, name_len: u32) -> tower_lsp::lsp_types::Range {
-    let start = Position::new(
+    let start = tower_lsp::lsp_types::Position::new(
         (span.line as u32).saturating_sub(1),
         (span.col  as u32).saturating_sub(1),
     );
-    tower_lsp::lsp_types::Range::new(start, Position::new(start.line, start.character + name_len))
+    tower_lsp::lsp_types::Range::new(start, tower_lsp::lsp_types::Position::new(start.line, start.character + name_len))
 }
 
 /// TypeAnnotation → 可读字符串

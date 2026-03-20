@@ -408,14 +408,41 @@ impl Interpreter {
             }
 
             Stmt::FnDef(fndef) => {
-                let name = fndef.name.clone().unwrap_or_default();
-                let func = Value::Function(Rc::new(Function {
+                let func = Rc::new(Function {
                     name: fndef.name.clone(),
                     params: fndef.params.clone(),
                     body: fndef.body.clone(),
                     closure: env.clone(),
-                }));
-                env.borrow_mut().define(name, func, false);
+                });
+                if let Some(receiver) = &fndef.receiver {
+                    // fn Player.method(...) → 挂载到已定义的 class 上
+                    let class_val = env.borrow().get(receiver)
+                        .ok_or_else(|| RuntimeError::new(format!("未定义的类 '{receiver}'")))?;
+                    match class_val {
+                        Value::Class(class_rc) => {
+                            let method_name = fndef.name.clone().unwrap_or_default();
+                            // ClassObj.methods 是 HashMap，需要内部可变性
+                            // 用 Rc<RefCell<ClassObj>> 或直接重建；这里用 unsafe 强转绕开
+                            // 更好的方式：ClassObj.methods 改为 RefCell
+                            // 暂时：重建一个新的 ClassObj 替换环境中的绑定
+                            let mut new_methods = class_rc.methods.clone();
+                            new_methods.insert(method_name, func);
+                            let new_class = Rc::new(ClassObj {
+                                name: class_rc.name.clone(),
+                                module: class_rc.module.clone(),
+                                mixins: class_rc.mixins.clone(),
+                                fields: class_rc.fields.clone(),
+                                methods: new_methods,
+                                static_methods: class_rc.static_methods.clone(),
+                            });
+                            env.borrow_mut().define(receiver.clone(), Value::Class(new_class), false);
+                        }
+                        _ => return Err(RuntimeError::new(format!("'{receiver}' 不是一个类"))),
+                    }
+                } else {
+                    let name = fndef.name.clone().unwrap_or_default();
+                    env.borrow_mut().define(name, Value::Function(func), false);
+                }
                 Ok(None)
             }
 
@@ -753,12 +780,20 @@ impl Interpreter {
                 self.get_index(obj_val, idx_val)
             }
 
-            Expr::New { class, args, .. } => {
+            Expr::StructLit { class, fields, .. } => {
                 let class_val = env.borrow().get(class)
                     .ok_or_else(|| RuntimeError::new(format!("未定义的类 '{class}'")))?;
-                let mut arg_vals = Vec::new();
-                for a in args { arg_vals.push(self.eval(&a.expr, env.clone())?); }
-                self.instantiate(class_val, arg_vals)
+                let class_rc = match class_val {
+                    Value::Class(c) => c,
+                    _ => return Err(RuntimeError::new(format!("'{class}' 不是一个类"))),
+                };
+                let inst = Rc::new(RefCell::new(Instance::new(class_rc)));
+                // 按字段名初始化，缺字段保持 nil
+                for (fname, _, fexpr) in fields {
+                    let val = self.eval(fexpr, env.clone())?;
+                    inst.borrow_mut().fields.insert(fname.clone(), val);
+                }
+                Ok(Value::Instance(inst))
             }
 
             Expr::Is { expr, type_name } => {
@@ -1141,27 +1176,12 @@ impl Interpreter {
         // 收集字段
         let all_fields = cd.fields.clone();
 
-        // 收集方法：mixin 方法先混入（按列表顺序，后者覆盖前者）
+        // 方法通过 fn ClassName.method 在类定义后注册，这里初始化时先混入 mixin 方法
         let mut methods: HashMap<String, Rc<Function>> = HashMap::new();
-        let mut static_methods: HashMap<String, Rc<Function>> = HashMap::new();
 
         for m in &mixins {
             for (name, func) in &m.methods {
                 methods.insert(name.clone(), func.clone());
-            }
-        }
-        // 自身方法覆盖 mixin
-        for md in &cd.methods {
-            let func = Rc::new(Function {
-                name: md.fn_def.name.clone(),
-                params: md.fn_def.params.clone(),
-                body: md.fn_def.body.clone(),
-                closure: env.clone(),
-            });
-            if md.static_ {
-                static_methods.insert(md.fn_def.name.clone().unwrap_or_default(), func);
-            } else {
-                methods.insert(md.fn_def.name.clone().unwrap_or_default(), func);
             }
         }
 
@@ -1171,7 +1191,7 @@ impl Interpreter {
             mixins,
             fields: all_fields,
             methods,
-            static_methods,
+            static_methods: HashMap::new(),
         });
 
         env.borrow_mut().define(cd.name.clone(), Value::Class(class_obj), false);

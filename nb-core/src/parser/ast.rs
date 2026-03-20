@@ -1,7 +1,7 @@
 use crate::lexer::StringPart;
 
 /// 源码位置（行列号，1-based）
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Span {
     pub line: usize,
     pub col: usize,
@@ -102,6 +102,7 @@ pub enum Stmt {
 pub struct FnDef {
     pub name: Option<String>,   // None 表示匿名函数
     pub name_span: Span,        // 函数名位置（匿名函数为 fn 关键字位置）
+    pub receiver: Option<String>, // fn Player.method 中的 "Player"
     pub async_: bool,
     pub params: Vec<Param>,
     pub ret_type: Option<TypeAnnotation>,
@@ -118,14 +119,13 @@ pub struct Param {
     pub type_ann: Option<TypeAnnotation>,
 }
 
-/// class 定义
+/// class 定义（只含字段，方法通过 fn ClassName.method 定义）
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: String,
     pub name_span: Span,        // 类名位置
-    pub mixins: Vec<String>,    // 混入的 mixin 列表（原 parents）
+    pub mixins: Vec<String>,    // 混入的 mixin 列表
     pub fields: Vec<FieldDef>,
-    pub methods: Vec<MethodDef>,
     pub span: Span,             // class 关键字位置
 }
 
@@ -137,11 +137,6 @@ pub struct FieldDef {
     pub type_ann: Option<TypeAnnotation>,
 }
 
-#[derive(Debug, Clone)]
-pub struct MethodDef {
-    pub static_: bool,
-    pub fn_def: FnDef,
-}
 
 /// mixin 定义
 #[derive(Debug, Clone)]
@@ -187,8 +182,8 @@ pub enum Expr {
     /// 下标  arr[idx]
     Index { obj: Box<Expr>, idx: Box<Expr> },
 
-    /// new Class(args)
-    New { class: String, class_span: Span, args: Vec<CallArg> },
+    /// new → 结构体字面量  ClassName { field = val, .. }
+    StructLit { class: String, class_span: Span, fields: Vec<(String, Span, Expr)> },
     /// obj is Type
     Is { expr: Box<Expr>, type_name: String },
 
@@ -212,10 +207,10 @@ impl Expr {
     /// 获取表达式的 span（用于 LSP 位置计算）
     pub fn span(&self) -> Span {
         match self {
-            Expr::Ident(_, s)            => *s,
-            Expr::Call { span, .. }      => *span,
+            Expr::Ident(_, s)              => *s,
+            Expr::Call { span, .. }        => *span,
             Expr::Field { field_span, .. } => *field_span,
-            Expr::New { class_span, .. } => *class_span,
+            Expr::StructLit { class_span, .. } => *class_span,
             _                            => Span::default(),
         }
     }
