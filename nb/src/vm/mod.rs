@@ -5,7 +5,6 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use nb_core::parser::ast::*;
-use nb_core::lexer::StringPart;
 
 // ─────────────────────────────────────────
 //  Value
@@ -661,10 +660,9 @@ impl Interpreter {
                 let mut result = String::new();
                 for part in parts {
                     match part {
-                        StringPart::Literal(s) => result.push_str(s),
-                        StringPart::Expr(src, ..)  => {
-                            // 重新解析插值表达式
-                            let val = self.eval_source(src, env.clone())?;
+                        InterpPart::Literal(s) => result.push_str(s),
+                        InterpPart::Expr(expr) => {
+                            let val = self.eval(expr, env.clone())?;
                             result.push_str(&format!("{val}"));
                         }
                     }
@@ -1247,19 +1245,6 @@ impl Interpreter {
             BinOp::GtEq  => Ok(Value::Bool(cmp_values(&l, &r)? >= 0)),
             BinOp::And | BinOp::Or | BinOp::Range => unreachable!(),
         }
-    }
-
-    // ── 重新解析插值表达式 ──
-
-    fn eval_source(&mut self, src: &str, env: Rc<RefCell<Env>>) -> EvalResult {
-        use nb_core::lexer::Lexer;
-        use nb_core::parser::Parser;
-        let tokens = Lexer::new(src).tokenize()
-            .map_err(|e| RuntimeError::new(format!("插值解析错误: {e}")))?;
-        let mut parser = Parser::new(tokens);
-        let expr = parser.parse_expr_pub()
-            .map_err(|e| RuntimeError::new(format!("插值解析错误: {e}")))?;
-        self.eval(&expr, env)
     }
 
     // ── 字符串/Array/Dict 方法 ──

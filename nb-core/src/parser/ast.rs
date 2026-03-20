@@ -1,4 +1,9 @@
-use crate::lexer::StringPart;
+/// 插值字符串的组成部分（在 Parser 阶段已将表达式解析为 AST）
+#[derive(Debug, Clone)]
+pub enum InterpPart {
+    Literal(String),
+    Expr(Box<Expr>),
+}
 
 /// 源码位置（行列号，1-based）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -164,7 +169,7 @@ pub enum Expr {
     Bool(bool),
     Number(f64),
     StringLit(String),
-    InterpolatedString(Vec<StringPart>),
+    InterpolatedString(Vec<InterpPart>),
     /// 标识符，携带位置信息
     Ident(String, Span),
 

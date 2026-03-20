@@ -412,39 +412,8 @@ fn resolve_expr(expr: &Expr, scope: &Scope, defs: &Definitions, db: &mut Resolut
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let nb_core::lexer::StringPart::Expr(src, start_line, start_col) = part {
-                    // 重新 parse 插值表达式后 resolve
-                    // Re-parsed span 是相对于插值子串起点的（1-based）：
-                    //   abs_line = start_line + rel_line - 1
-                    //   abs_col  = start_col  + rel_col  - 1  (rel_line == 1)
-                    //   abs_col  = rel_col                    (rel_line > 1，多行插值)
-                    let offset_use_span = |s: Span| -> Span {
-                        if s == Span::default() { return s; }
-                        let abs_line = start_line + s.line - 1;
-                        let abs_col  = if s.line == 1 {
-                            start_col + s.col - 1
-                        } else {
-                            s.col
-                        };
-                        Span::new(abs_line, abs_col)
-                    };
-
-                    if let Ok(tokens) = Lexer::new(src).tokenize() {
-                        if let Ok(expr) = Parser::new(tokens).parse_expr_pub() {
-                            // 收集到临时 db，use-span 是相对位置，def-span 已是绝对位置
-                            let mut tmp_db = ResolutionDB::default();
-                            resolve_expr(&expr, scope, defs, &mut tmp_db);
-
-                            // 将相对 use-span 偏移后写入真正的 db
-                            for (use_rel, def_abs) in tmp_db.use_to_def {
-                                record_use(db, offset_use_span(use_rel), def_abs);
-                            }
-                            // 如果插值内有局部变量定义（罕见），也偏移
-                            for (def_rel, info) in tmp_db.def_info {
-                                db.def_info.entry(offset_use_span(def_rel)).or_insert(info);
-                            }
-                        }
-                    }
+                if let nb_core::parser::ast::InterpPart::Expr(expr) = part {
+                    resolve_expr(expr, scope, defs, db);
                 }
             }
         }
@@ -554,52 +523,61 @@ fn infer_type(expr: &Expr, scope: &Scope) -> Option<String> {
 
 // ── 公共查询工具 ──────────────────────────────────────────────────────────────
 
-/// 从 token 流找光标位置的 span
+/// 从 ResolutionDB（已包含所有绝对坐标的 span）中找光标位置命中的 span。
+/// 同时也扫描顶层 token 流里的普通 Ident（cover 未被 DB 收录的位置）。
 pub fn span_at_position(source: &str, pos: tower_lsp::lsp_types::Position) -> Option<Span> {
-    let tokens = Lexer::new(source).tokenize().ok()?;
     let target_line = (pos.line + 1) as usize;
     let target_col  = (pos.character + 1) as usize;
+
+    // 只扫顶层 token 流中的普通 Ident（插值内的 ident 不在顶层流）
+    let tokens = Lexer::new(source).tokenize().ok()?;
     for twp in &tokens {
-        // ── 普通 Ident ───────────────────────────────────────────────────────
-        if twp.line == target_line {
-            if let nb_core::lexer::Token::Ident(name) = &twp.token {
-                let end = twp.col + name.len();
-                if target_col >= twp.col && target_col <= end {
-                    return Some(Span::new(twp.line, twp.col));
-                }
+        if twp.line != target_line { continue; }
+        if let nb_core::lexer::Token::Ident(name) = &twp.token {
+            let end = twp.col + name.len();
+            if target_col >= twp.col && target_col < end {
+                return Some(Span::new(twp.line, twp.col));
             }
         }
+    }
+    None
+}
 
-        // ── 插值字符串：内部 ident 不在顶层 token 流，需单独处理 ───────────
-        if let nb_core::lexer::Token::InterpolatedString(parts) = &twp.token {
-            for part in parts {
-                if let nb_core::lexer::StringPart::Expr(src, start_line, start_col) = part {
-                    // 只有当插值片段可能覆盖目标行时才处理
-                    // （简化：单行插值 start_line == target_line）
-                    if *start_line != target_line { continue; }
+/// 在 ResolutionDB 里查找覆盖目标位置的 span（包含插值字符串内的 ident）。
+/// 先用 span_at_position 找 token 流中的 span；找不到时在 DB 中枚举。
+pub fn span_at_position_with_db(
+    db: &ResolutionDB,
+    source: &str,
+    pos: tower_lsp::lsp_types::Position,
+) -> Option<Span> {
+    // 先试 token 流（快路径，覆盖绝大多数情况）
+    if let Some(s) = span_at_position(source, pos) {
+        return Some(s);
+    }
 
-                    // 重新 tokenize 插值子串，用相同的偏移公式算绝对位置
-                    if let Ok(sub_tokens) = Lexer::new(src).tokenize() {
-                        for stwp in &sub_tokens {
-                            if let nb_core::lexer::Token::Ident(name) = &stwp.token {
-                                // 转换为绝对位置
-                                let abs_line = start_line + stwp.line - 1;
-                                let abs_col  = if stwp.line == 1 {
-                                    start_col + stwp.col - 1
-                                } else {
-                                    stwp.col
-                                };
-                                if abs_line == target_line {
-                                    let end = abs_col + name.len();
-                                    if target_col >= abs_col && target_col <= end {
-                                        return Some(Span::new(abs_line, abs_col));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    // 慢路径：在 DB 收录的所有 use-span 和 def-span 中查找
+    // （插值字符串内的 ident 通过 parser 已获得绝对坐标，会被 record_use 写入 DB）
+    let target_line = (pos.line + 1) as usize;
+    let target_col  = (pos.character + 1) as usize;
+
+    // 收集所有已知 span
+    let mut candidates: Vec<Span> = Vec::new();
+    candidates.extend(db.use_to_def.keys().copied());
+    candidates.extend(db.def_info.keys().copied());
+
+    for span in candidates {
+        if span.line != target_line { continue; }
+        // 从 def_info 或 use_to_def 反推符号名长度
+        let name_len = if let Some(info) = db.def_info.get(&span) {
+            info.name().len()
+        } else if let Some(def) = db.use_to_def.get(&span) {
+            db.def_info.get(def).map(|i| i.name().len()).unwrap_or(1)
+        } else {
+            1
+        };
+        let end = span.col + name_len;
+        if target_col >= span.col && target_col < end {
+            return Some(span);
         }
     }
     None

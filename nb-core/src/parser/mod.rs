@@ -1,7 +1,7 @@
 pub mod ast;
 
 use thiserror::Error;
-use crate::lexer::{Token, TokenWithPos};
+use crate::lexer::{Token, TokenWithPos, StringPart};
 use ast::*;
 
 #[derive(Debug, Error)]
@@ -22,11 +22,6 @@ pub struct Parser {
 impl Parser {
     pub fn new(tokens: Vec<TokenWithPos>) -> Self {
         Self { tokens, pos: 0, no_struct_lit: false }
-    }
-
-    /// 公开给 vm 用于解析字符串插值表达式
-    pub fn parse_expr_pub(&mut self) -> Result<Expr, ParseError> {
-        self.parse_expr()
     }
 
     pub fn parse_program(&mut self) -> Result<Vec<Stmt>, ParseError> {
@@ -549,7 +544,41 @@ impl Parser {
             Token::False                 => { self.advance(); Ok(Expr::Bool(false)) }
             Token::Number(n)             => { self.advance(); Ok(Expr::Number(n)) }
             Token::StringLit(s)          => { self.advance(); Ok(Expr::StringLit(s)) }
-            Token::InterpolatedString(p) => { self.advance(); Ok(Expr::InterpolatedString(p)) }
+            Token::InterpolatedString(parts) => {
+                let parts = parts.clone();
+                self.advance();
+                // 在 Parser 阶段将每个 StringPart::Expr 解析成带绝对坐标的 AST Expr
+                let mut interp_parts = Vec::new();
+                for part in parts {
+                    match part {
+                        StringPart::Literal(s) => {
+                            interp_parts.push(ast::InterpPart::Literal(s));
+                        }
+                        StringPart::Expr(src, start_line, start_col) => {
+                            // 重新 tokenize 子串，把每个 token 的坐标加上文件偏移
+                            use crate::lexer::Lexer;
+                            let sub_tokens = Lexer::new(&src).tokenize()
+                                .unwrap_or_default();
+                            let abs_tokens: Vec<TokenWithPos> = sub_tokens
+                                .into_iter()
+                                .map(|t| {
+                                    let abs_line = start_line + t.line - 1;
+                                    let abs_col  = if t.line == 1 {
+                                        start_col + t.col - 1
+                                    } else {
+                                        t.col
+                                    };
+                                    TokenWithPos { token: t.token, line: abs_line, col: abs_col }
+                                })
+                                .collect();
+                            if let Ok(expr) = Parser::new(abs_tokens).parse_expr() {
+                                interp_parts.push(ast::InterpPart::Expr(Box::new(expr)));
+                            }
+                        }
+                    }
+                }
+                Ok(Expr::InterpolatedString(interp_parts))
+            }
             Token::Ident(s) => {
                 let span = self.peek_span();
                 self.advance();

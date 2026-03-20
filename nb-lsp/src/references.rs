@@ -1,9 +1,9 @@
 use tower_lsp::lsp_types::*;
-use crate::resolution::{build_resolution_db, span_at_position, span_to_location, name_len_at};
+use crate::resolution::{build_resolution_db, span_at_position_with_db, span_to_location, name_len_at};
 
 pub fn get_references(source: &str, uri: &Url, position: Position) -> Vec<Location> {
     let Some(db)   = build_resolution_db(source) else { return vec![]; };
-    let Some(span) = span_at_position(source, position) else { return vec![]; };
+    let Some(span) = span_at_position_with_db(&db, source, position) else { return vec![]; };
     let uses = db.find_references(span);
     uses.into_iter()
         .map(|s| {

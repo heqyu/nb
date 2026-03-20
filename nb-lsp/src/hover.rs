@@ -1,13 +1,12 @@
 use tower_lsp::lsp_types::*;
 
-use crate::resolution::{build_resolution_db, span_at_position, name_len_at};
+use crate::resolution::{build_resolution_db, span_at_position_with_db, name_len_at};
 use crate::symbol_table::{type_ann_str, SymbolInfo};
 
 pub fn get_hover(source: &str, position: Position) -> Option<Hover> {
     let db   = build_resolution_db(source)?;
-    let span = span_at_position(source, position)?;
+    let span = span_at_position_with_db(&db, source, position)?;
 
-    // 先查 use_to_def，再查 def_info（光标在定义处时直接命中）
     let def_span = db.use_to_def.get(&span).copied().unwrap_or(span);
     let info = db.def_info.get(&def_span)?;
 
