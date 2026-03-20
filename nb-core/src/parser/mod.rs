@@ -326,11 +326,8 @@ impl Parser {
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, ParseError> {
         let (line, col) = self.peek_pos();
-        let mut expr = self.parse_expr()?;
-        // 后缀 ? 只在语句层面处理（避免和三元 ? 冲突）
-        if self.eat(&Token::Question) {
-            expr = Expr::Try(Box::new(expr));
-        }
+        let expr = self.parse_expr()?;
+        // 注意：后缀 ? 已在 parse_postfix 层处理，此处无需重复消费
         match self.peek().clone() {
             Token::Assign      => { self.advance(); let v = self.parse_expr()?; Ok(Stmt::Assign { target: expr, value: v }) }
             Token::PlusAssign  => { self.advance(); let v = self.parse_expr()?; Ok(Stmt::CompoundAssign { target: expr, op: BinOp::Add, value: v }) }
@@ -516,6 +513,11 @@ impl Parser {
                     self.advance();
                     let (type_name, type_span) = self.expect_ident_with_span()?;
                     expr = Expr::Is { expr: Box::new(expr), type_name, type_span };
+                }
+                Token::Question => {
+                    // 后缀 ? 错误传播（优先级高于三元，三元在 parse_ternary 里处理）
+                    self.advance();
+                    expr = Expr::Try(Box::new(expr));
                 }
                 _ => break,
             }

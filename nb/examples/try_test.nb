@@ -1,0 +1,25 @@
+fn parse_number(s: string): number throws {
+    let n = tonumber(s)
+    if n == nil {
+        throw "不是数字: ${s}"
+    }
+    return n
+}
+
+fn double_parse(s: string): number throws {
+    let n = parse_number(s)?   // 出错自动向上传播
+    return n * 2
+}
+
+// protect 捕获
+let err, result = protect {
+    return double_parse("42")
+}
+print(err)      // nil
+print(result)   // 84
+
+let err2, result2 = protect {
+    return double_parse("abc")
+}
+print(err2)     // 不是数字: abc
+print(result2)  // nil

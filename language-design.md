@@ -428,16 +428,20 @@ throw NetworkError { code = 408, msg = "timeout" }
 ```
 
 ### ? 错误传播
-- 语法已实现（`expr?`），当前运行时直接求值，未实现真正的错误传播语义
+- `expr?` 是后缀操作符，只能在 `throws` 标记的函数内使用
+- 语义：子表达式执行出错时，立即从当前函数向上抛出同一错误，由最近的 `protect` 块捕获
+- 优先级高于三元运算符，`f()?` 先结合，`cond ? a : b` 不受影响
 
 ```nb
 fn load(path: string): string throws {
-    let f = open_file(path)?
-    return f.read()?
+    let f = open_file(path)?   // open_file 出错 → 立即向上 throw
+    return f.read()?           // read 出错 → 立即向上 throw
 }
-```
 
-> **当前状态：** `?` 符号解析正常，运行时等价于直接求值，不会自动向上传播错误。
+// 调用方用 protect 捕获
+let err, content = protect { return load("./data.txt") }
+if err != nil { print("加载失败: ${err}") }
+```
 
 ---
 
@@ -691,10 +695,8 @@ string.format("{0} + {1} = {2}", a, b, a + b)
 - ⏳ 字节码编译（当前为树遍历解释）
 - ⏳ 模块系统（`require` / `export`）
 - ⏳ 真正的 async/await（当前同步执行）
-- ⏳ `?` 错误传播（当前等价于直接求值）
 - ⏳ 深层不可变（`let arr` 元素禁止修改）
 - ⏳ 标准库（`@std.fs` / `@std.io` / `@std.math` 等）
-- ⏳ `string(obj)` 自动调用 `to_string` 方法
 
 ---
 
