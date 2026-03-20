@@ -662,7 +662,7 @@ impl Interpreter {
                 for part in parts {
                     match part {
                         StringPart::Literal(s) => result.push_str(s),
-                        StringPart::Expr(src)  => {
+                        StringPart::Expr(src, ..)  => {
                             // 重新解析插值表达式
                             let val = self.eval_source(src, env.clone())?;
                             result.push_str(&format!("{val}"));

@@ -85,7 +85,8 @@ pub enum Token {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StringPart {
     Literal(String),
-    Expr(String), // 原始表达式文本，由 parser 进一步解析
+    /// 原始表达式文本 + 在源文件中的起始行列（1-based），由 parser 进一步解析
+    Expr(String, usize, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -325,8 +326,10 @@ impl Lexer {
                     }
                     self.advance(); // $
                     self.advance(); // {
+                    let expr_line = self.line;
+                    let expr_col  = self.col;
                     let expr = self.lex_interpolation()?;
-                    parts.push(StringPart::Expr(expr));
+                    parts.push(StringPart::Expr(expr, expr_line, expr_col));
                 }
                 Some(c) => { current.push(c); self.advance(); }
             }
@@ -438,7 +441,7 @@ mod tests {
         match &tokens[0] {
             Token::InterpolatedString(parts) => {
                 assert_eq!(parts[0], StringPart::Literal("hello ".into()));
-                assert_eq!(parts[1], StringPart::Expr("name".into()));
+                assert_eq!(parts[1], StringPart::Expr("name".into(), 1, 9));
                 assert_eq!(parts[2], StringPart::Literal("!".into()));
             }
             _ => panic!("应该是插值字符串"),

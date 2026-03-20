@@ -412,11 +412,37 @@ fn resolve_expr(expr: &Expr, scope: &Scope, defs: &Definitions, db: &mut Resolut
         }
         Expr::InterpolatedString(parts) => {
             for part in parts {
-                if let nb_core::lexer::StringPart::Expr(src) = part {
+                if let nb_core::lexer::StringPart::Expr(src, start_line, start_col) = part {
                     // 重新 parse 插值表达式后 resolve
+                    // Re-parsed span 是相对于插值子串起点的（1-based）：
+                    //   abs_line = start_line + rel_line - 1
+                    //   abs_col  = start_col  + rel_col  - 1  (rel_line == 1)
+                    //   abs_col  = rel_col                    (rel_line > 1，多行插值)
+                    let offset_use_span = |s: Span| -> Span {
+                        if s == Span::default() { return s; }
+                        let abs_line = start_line + s.line - 1;
+                        let abs_col  = if s.line == 1 {
+                            start_col + s.col - 1
+                        } else {
+                            s.col
+                        };
+                        Span::new(abs_line, abs_col)
+                    };
+
                     if let Ok(tokens) = Lexer::new(src).tokenize() {
                         if let Ok(expr) = Parser::new(tokens).parse_expr_pub() {
-                            resolve_expr(&expr, scope, defs, db);
+                            // 收集到临时 db，use-span 是相对位置，def-span 已是绝对位置
+                            let mut tmp_db = ResolutionDB::default();
+                            resolve_expr(&expr, scope, defs, &mut tmp_db);
+
+                            // 将相对 use-span 偏移后写入真正的 db
+                            for (use_rel, def_abs) in tmp_db.use_to_def {
+                                record_use(db, offset_use_span(use_rel), def_abs);
+                            }
+                            // 如果插值内有局部变量定义（罕见），也偏移
+                            for (def_rel, info) in tmp_db.def_info {
+                                db.def_info.entry(offset_use_span(def_rel)).or_insert(info);
+                            }
                         }
                     }
                 }
