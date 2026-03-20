@@ -108,7 +108,10 @@ fn collect_refs_expr(expr: &Expr, name: &str, out: &mut Vec<Span>) {
             collect_refs_expr(callee, name, out);
             for arg in args { collect_refs_expr(&arg.expr, name, out); }
         }
-        Expr::Field { obj, .. } => collect_refs_expr(obj, name, out),
+        Expr::Field { obj, field, field_span } => {
+            collect_refs_expr(obj, name, out);
+            if field == name { out.push(*field_span); }
+        }
         Expr::Index { obj, idx } => {
             collect_refs_expr(obj, name, out);
             collect_refs_expr(idx, name, out);
