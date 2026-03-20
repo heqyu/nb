@@ -796,7 +796,7 @@ impl Interpreter {
                 Ok(Value::Instance(inst))
             }
 
-            Expr::Is { expr, type_name } => {
+            Expr::Is { expr, type_name, .. } => {
                 let v = self.eval(expr, env.clone())?;
                 // 检查类、trait
                 let result = match &v {

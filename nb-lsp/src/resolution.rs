@@ -401,7 +401,27 @@ fn resolve_expr(expr: &Expr, scope: &Scope, defs: &Definitions, db: &mut Resolut
             resolve_expr(then, scope, defs, db);
             resolve_expr(else_, scope, defs, db);
         }
-        Expr::Is { expr, .. } => resolve_expr(expr, scope, defs, db),
+        Expr::Is { expr, type_name, type_span } => {
+            resolve_expr(expr, scope, defs, db);
+            // type_name 是类名或 mixin 名的引用
+            if let Some((_, def_span)) = defs.classes.get(type_name) {
+                record_use(db, *type_span, *def_span);
+            } else if let Some((_, def_span)) = defs.mixins.get(type_name) {
+                record_use(db, *type_span, *def_span);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let nb_core::lexer::StringPart::Expr(src) = part {
+                    // 重新 parse 插值表达式后 resolve
+                    if let Ok(tokens) = Lexer::new(src).tokenize() {
+                        if let Ok(expr) = Parser::new(tokens).parse_expr_pub() {
+                            resolve_expr(&expr, scope, defs, db);
+                        }
+                    }
+                }
+            }
+        }
         Expr::Fn(f) => {
             let mut fn_scope = scope.child();
             for p in &f.params {
@@ -431,31 +451,24 @@ fn resolve_expr(expr: &Expr, scope: &Scope, defs: &Definitions, db: &mut Resolut
 
 /// 解析一个普通标识符引用
 fn resolve_ident(name: &str, span: Span, scope: &Scope, defs: &Definitions, db: &mut ResolutionDB) {
-    // 1. self → 当前类的定义
-    if name == "self" {
-        if let Some(class_name) = &scope.self_type {
-            if let Some((_, def_span)) = defs.classes.get(class_name) {
-                record_use(db, span, *def_span);
-            }
-        }
-        return;
-    }
-    // 2. 局部变量 / 参数
+    // self 不绑定到类定义（避免污染类的 find-references），直接跳过
+    if name == "self" { return; }
+    // 1. 局部变量 / 参数
     if let Some((def_span, _)) = scope.lookup_var(name) {
         record_use(db, span, def_span);
         return;
     }
-    // 3. 顶层函数
+    // 2. 顶层函数
     if let Some((_, def_span)) = defs.functions.get(name) {
         record_use(db, span, *def_span);
         return;
     }
-    // 4. 类名
+    // 3. 类名
     if let Some((_, def_span)) = defs.classes.get(name) {
         record_use(db, span, *def_span);
         return;
     }
-    // 5. mixin 名
+    // 4. mixin 名
     if let Some((_, def_span)) = defs.mixins.get(name) {
         record_use(db, span, *def_span);
     }

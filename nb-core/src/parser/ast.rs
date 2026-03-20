@@ -185,7 +185,7 @@ pub enum Expr {
     /// new → 结构体字面量  ClassName { field = val, .. }
     StructLit { class: String, class_span: Span, fields: Vec<(String, Span, Expr)> },
     /// obj is Type
-    Is { expr: Box<Expr>, type_name: String },
+    Is { expr: Box<Expr>, type_name: String, type_span: Span },
 
     /// 匿名函数  fn(params) { body }
     Fn(Box<FnDef>),

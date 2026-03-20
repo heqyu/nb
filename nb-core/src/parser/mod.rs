@@ -520,8 +520,8 @@ impl Parser {
                 }
                 Token::Is => {
                     self.advance();
-                    let type_name = self.expect_ident()?;
-                    expr = Expr::Is { expr: Box::new(expr), type_name };
+                    let (type_name, type_span) = self.expect_ident_with_span()?;
+                    expr = Expr::Is { expr: Box::new(expr), type_name, type_span };
                 }
                 _ => break,
             }
