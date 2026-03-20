@@ -43,6 +43,11 @@ impl Parser {
         self.tokens.get(self.pos).map(|t| (t.line, t.col)).unwrap_or((0, 0))
     }
 
+    fn peek_span(&self) -> Span {
+        let (line, col) = self.peek_pos();
+        Span::new(line, col)
+    }
+
     fn advance(&mut self) -> &Token {
         let tok = &self.tokens[self.pos].token;
         if self.pos < self.tokens.len() - 1 { self.pos += 1; }
@@ -67,12 +72,13 @@ impl Parser {
         }
     }
 
-    fn expect_ident(&mut self) -> Result<String, ParseError> {
+    /// 消费标识符，同时返回其 Span
+    fn expect_ident_with_span(&mut self) -> Result<(String, Span), ParseError> {
+        let span = self.peek_span();
         match self.peek().clone() {
-            Token::Ident(s) => { self.advance(); Ok(s) }
-            // self/super 也可作为标识符使用（参数名、字段名场景）
-            Token::Self_    => { self.advance(); Ok("self".into()) }
-            Token::Super    => { self.advance(); Ok("super".into()) }
+            Token::Ident(s) => { self.advance(); Ok((s, span)) }
+            Token::Self_    => { self.advance(); Ok(("self".into(), span)) }
+            Token::Super    => { self.advance(); Ok(("super".into(), span)) }
             _ => {
                 let (line, col) = self.peek_pos();
                 Err(ParseError::Unexpected {
@@ -82,6 +88,10 @@ impl Parser {
                 })
             }
         }
+    }
+
+    fn expect_ident(&mut self) -> Result<String, ParseError> {
+        self.expect_ident_with_span().map(|(s, _)| s)
     }
 
     fn peek_next_token(&self) -> &Token {
@@ -114,9 +124,10 @@ impl Parser {
     }
 
     fn parse_let(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek_span();
         self.expect(&Token::Let)?;
         let mutable = self.eat(&Token::Mut);
-        let name = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident_with_span()?;
         // 支持多变量：let a, b, c = expr
         let mut extra_names: Vec<String> = Vec::new();
         while self.eat(&Token::Comma) {
@@ -126,7 +137,6 @@ impl Parser {
         // 避免把三元表达式的 : 误当作类型注解
         let type_ann = if extra_names.is_empty() {
             if self.check(&Token::Colon) {
-                // 向前看：colon 后面必须是标识符（类型名），否则不是类型注解
                 let is_type_ann = matches!(self.peek_next_token(), Token::Ident(_));
                 if is_type_ann {
                     self.advance(); // eat Colon
@@ -142,21 +152,27 @@ impl Parser {
         };
         let value = if self.eat(&Token::Assign) { Some(self.parse_expr()?) } else { None };
         if extra_names.is_empty() {
-            Ok(Stmt::Let { name, mutable, type_ann, value })
+            Ok(Stmt::Let { name, mutable, type_ann, value, span, name_span })
         } else {
             Ok(Stmt::MultiLet {
                 names: std::iter::once(name).chain(extra_names).collect(),
                 mutable,
                 value,
+                span,
             })
         }
     }
 
     fn parse_fn_def(&mut self, async_: bool) -> Result<FnDef, ParseError> {
+        let span = self.peek_span();
         self.expect(&Token::Fn)?;
-        let name = match self.peek().clone() {
-            Token::Ident(s) => { self.advance(); Some(s) }
-            _ => None,
+        let (name, name_span) = match self.peek().clone() {
+            Token::Ident(s) => {
+                let s_span = self.peek_span();
+                self.advance();
+                (Some(s), s_span)
+            }
+            _ => (None, span),  // 匿名函数，name_span 指向 fn 关键字
         };
         self.expect(&Token::LParen)?;
         let params = self.parse_params()?;
@@ -164,7 +180,7 @@ impl Parser {
         let ret_type = if self.eat(&Token::Colon) { Some(self.parse_type_ann()?) } else { None };
         let throws = self.eat(&Token::Throws);
         let body = self.parse_block()?;
-        Ok(FnDef { name, async_, params, ret_type, throws, body })
+        Ok(FnDef { name, name_span, async_, params, ret_type, throws, body, span })
     }
 
     fn parse_async_fn(&mut self) -> Result<Stmt, ParseError> {
@@ -177,9 +193,9 @@ impl Parser {
         let mut params = Vec::new();
         while !self.check(&Token::RParen) && !self.is_eof() {
             let mutable = self.eat(&Token::Mut);
-            let name = self.expect_ident()?;
+            let (name, name_span) = self.expect_ident_with_span()?;
             let type_ann = if self.eat(&Token::Colon) { Some(self.parse_type_ann()?) } else { None };
-            params.push(Param { name, mutable, type_ann });
+            params.push(Param { name, name_span, mutable, type_ann });
             if !self.eat(&Token::Comma) { break; }
         }
         Ok(params)
@@ -195,6 +211,7 @@ impl Parser {
     }
 
     fn parse_if(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek_span();
         self.expect(&Token::If)?;
         let cond = self.parse_expr()?;
         let then_body = self.parse_block()?;
@@ -211,10 +228,11 @@ impl Parser {
                 break;
             }
         }
-        Ok(Stmt::If { cond, then_body, else_ifs, else_body })
+        Ok(Stmt::If { cond, then_body, else_ifs, else_body, span })
     }
 
     fn parse_for(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek_span();
         self.expect(&Token::For)?;
         let first = self.expect_ident()?;
         if self.eat(&Token::Comma) {
@@ -223,25 +241,27 @@ impl Parser {
             self.expect(&Token::In)?;
             let iter = self.parse_expr()?;
             let body = self.parse_block()?;
-            Ok(Stmt::ForIn { key: first, value: Some(value), value_mutable, iter, body })
+            Ok(Stmt::ForIn { key: first, value: Some(value), value_mutable, iter, body, span })
         } else {
             self.expect(&Token::In)?;
             let iter = self.parse_expr()?;
             let body = self.parse_block()?;
-            Ok(Stmt::ForIn { key: first, value: None, value_mutable: false, iter, body })
+            Ok(Stmt::ForIn { key: first, value: None, value_mutable: false, iter, body, span })
         }
     }
 
     fn parse_while(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek_span();
         self.expect(&Token::While)?;
         let cond = self.parse_expr()?;
         let body = self.parse_block()?;
-        Ok(Stmt::While { cond, body })
+        Ok(Stmt::While { cond, body, span })
     }
 
     fn parse_class(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek_span();
         self.expect(&Token::Class)?;
-        let name = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident_with_span()?;
         let mut parents = Vec::new();
         if self.eat(&Token::Colon) {
             parents.push(self.expect_ident()?);
@@ -260,27 +280,28 @@ impl Parser {
                 methods.push(MethodDef { static_, fn_def: f });
             } else {
                 let mutable = self.eat(&Token::Mut);
-                let fname = self.expect_ident()?;
+                let (fname, fname_span) = self.expect_ident_with_span()?;
                 let type_ann = if self.eat(&Token::Colon) { Some(self.parse_type_ann()?) } else { None };
-                fields.push(FieldDef { name: fname, mutable, type_ann });
+                fields.push(FieldDef { name: fname, name_span: fname_span, mutable, type_ann });
             }
         }
         self.expect(&Token::RBrace)?;
-        Ok(Stmt::ClassDef(ClassDef { name, parents, fields, methods }))
+        Ok(Stmt::ClassDef(ClassDef { name, name_span, parents, fields, methods, span }))
     }
 
     fn parse_trait(&mut self) -> Result<Stmt, ParseError> {
+        let span = self.peek_span();
         self.expect(&Token::Trait)?;
-        let name = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident_with_span()?;
         self.expect(&Token::LBrace)?;
         let mut requires = Vec::new();
         let mut methods = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_eof() {
             if self.eat(&Token::Require) {
                 let mutable = self.eat(&Token::Mut);
-                let fname = self.expect_ident()?;
+                let (fname, fname_span) = self.expect_ident_with_span()?;
                 let type_ann = if self.eat(&Token::Colon) { Some(self.parse_type_ann()?) } else { None };
-                requires.push(FieldDef { name: fname, mutable, type_ann });
+                requires.push(FieldDef { name: fname, name_span: fname_span, mutable, type_ann });
             } else {
                 let async_ = self.eat(&Token::Async);
                 let f = self.parse_fn_def(async_)?;
@@ -288,7 +309,7 @@ impl Parser {
             }
         }
         self.expect(&Token::RBrace)?;
-        Ok(Stmt::TraitDef(TraitDef { name, requires, methods }))
+        Ok(Stmt::TraitDef(TraitDef { name, name_span, requires, methods, span }))
     }
 
     fn parse_throw(&mut self) -> Result<Stmt, ParseError> {
@@ -446,15 +467,17 @@ impl Parser {
             match self.peek().clone() {
                 Token::Dot => {
                     self.advance();
-                    let field = self.expect_ident()?;
+                    let (field, field_span) = self.expect_ident_with_span()?;
                     if self.check(&Token::LParen) {
+                        let span = self.peek_span();
                         let args = self.parse_call_args()?;
                         expr = Expr::Call {
-                            callee: Box::new(Expr::Field { obj: Box::new(expr), field }),
+                            callee: Box::new(Expr::Field { obj: Box::new(expr), field, field_span }),
                             args,
+                            span,
                         };
                     } else {
-                        expr = Expr::Field { obj: Box::new(expr), field };
+                        expr = Expr::Field { obj: Box::new(expr), field, field_span };
                     }
                 }
                 Token::LBracket => {
@@ -464,8 +487,9 @@ impl Parser {
                     expr = Expr::Index { obj: Box::new(expr), idx: Box::new(idx) };
                 }
                 Token::LParen => {
+                    let span = self.peek_span();
                     let args = self.parse_call_args()?;
-                    expr = Expr::Call { callee: Box::new(expr), args };
+                    expr = Expr::Call { callee: Box::new(expr), args, span };
                 }
                 Token::Is => {
                     self.advance();
@@ -499,9 +523,21 @@ impl Parser {
             Token::Number(n)             => { self.advance(); Ok(Expr::Number(n)) }
             Token::StringLit(s)          => { self.advance(); Ok(Expr::StringLit(s)) }
             Token::InterpolatedString(p) => { self.advance(); Ok(Expr::InterpolatedString(p)) }
-            Token::Ident(s)              => { self.advance(); Ok(Expr::Ident(s)) }
-            Token::Self_                 => { self.advance(); Ok(Expr::Ident("self".into())) }
-            Token::Super                 => { self.advance(); Ok(Expr::Ident("super".into())) }
+            Token::Ident(s) => {
+                let span = self.peek_span();
+                self.advance();
+                Ok(Expr::Ident(s, span))
+            }
+            Token::Self_ => {
+                let span = self.peek_span();
+                self.advance();
+                Ok(Expr::Ident("self".into(), span))
+            }
+            Token::Super => {
+                let span = self.peek_span();
+                self.advance();
+                Ok(Expr::Ident("super".into(), span))
+            }
             Token::LParen => {
                 self.advance();
                 let e = self.parse_expr()?;
@@ -553,9 +589,9 @@ impl Parser {
 
     fn parse_new(&mut self) -> Result<Expr, ParseError> {
         self.expect(&Token::New)?;
-        let class = self.expect_ident()?;
+        let (class, class_span) = self.expect_ident_with_span()?;
         let args = self.parse_call_args()?;
-        Ok(Expr::New { class, args })
+        Ok(Expr::New { class, class_span, args })
     }
 
     fn parse_protect(&mut self) -> Result<Expr, ParseError> {
@@ -655,5 +691,28 @@ mod tests {
     fn test_new() {
         let stmts = parse(r#"let x = new Animal("cat", 100)"#);
         assert!(matches!(stmts[0], Stmt::Let { .. }));
+    }
+
+    #[test]
+    fn test_span_fn() {
+        let stmts = parse("fn add(a, b) { return a + b }");
+        if let Stmt::FnDef(f) = &stmts[0] {
+            assert_eq!(f.span.line, 1);
+            assert_eq!(f.name_span.line, 1);
+            assert!(f.name_span.col > f.span.col); // 函数名在 fn 之后
+        } else {
+            panic!("应该是 FnDef");
+        }
+    }
+
+    #[test]
+    fn test_span_ident() {
+        let stmts = parse("let x = 10");
+        if let Stmt::Let { name_span, .. } = &stmts[0] {
+            assert_eq!(name_span.line, 1);
+            assert!(name_span.col > 0);
+        } else {
+            panic!("应该是 Let");
+        }
     }
 }

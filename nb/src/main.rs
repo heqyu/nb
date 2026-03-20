@@ -1,12 +1,10 @@
-mod lexer;
-mod parser;
 mod compiler;
 mod vm;
 mod stdlib;
 
 use std::path::Path;
-use lexer::Lexer;
-use parser::Parser;
+use nb_core::lexer::Lexer;
+use nb_core::parser::Parser;
 use vm::Interpreter;
 
 fn main() {

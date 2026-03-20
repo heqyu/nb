@@ -1,0 +1,13 @@
+# Rust build output
+target/
+
+# VS Code extension build output
+nb-vscode/out/
+nb-vscode/node_modules/
+nb-vscode/*.vsix
+
+# Temp rewrite dir
+_nb_rewrite/
+
+# Claude internal
+.claude/

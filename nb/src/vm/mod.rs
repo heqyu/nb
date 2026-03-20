@@ -4,8 +4,8 @@ use std::fmt;
 use std::rc::Rc;
 use indexmap::IndexMap;
 
-use crate::parser::ast::*;
-use crate::lexer::StringPart;
+use nb_core::parser::ast::*;
+use nb_core::lexer::StringPart;
 
 // ─────────────────────────────────────────
 //  Value
@@ -374,7 +374,7 @@ impl Interpreter {
                 Ok(None)
             }
 
-            Stmt::MultiLet { names, mutable, value } => {
+            Stmt::MultiLet { names, mutable, value, .. } => {
                 let vals = match value {
                     Some(e) => self.eval_multi(e, env.clone())?,
                     None    => vec![Value::Nil],
@@ -430,7 +430,7 @@ impl Interpreter {
                 Ok(Some(ControlFlow::Return(vals)))
             }
 
-            Stmt::If { cond, then_body, else_ifs, else_body } => {
+            Stmt::If { cond, then_body, else_ifs, else_body, .. } => {
                 let c = self.eval(cond, env.clone())?;
                 if c.is_truthy() {
                     let child = Rc::new(RefCell::new(Env::with_parent(env)));
@@ -450,7 +450,7 @@ impl Interpreter {
                 Ok(None)
             }
 
-            Stmt::While { cond, body } => {
+            Stmt::While { cond, body, .. } => {
                 loop {
                     let c = self.eval(cond, env.clone())?;
                     if !c.is_truthy() { break; }
@@ -465,7 +465,7 @@ impl Interpreter {
                 Ok(None)
             }
 
-            Stmt::ForIn { key, value, value_mutable, iter, body } => {
+            Stmt::ForIn { key, value, value_mutable, iter, body, .. } => {
                 self.exec_for(key, value.as_deref(), *value_mutable, iter, body, env)
             }
 
@@ -572,10 +572,10 @@ impl Interpreter {
 
     fn assign(&mut self, target: &Expr, val: Value, env: Rc<RefCell<Env>>, in_ctor: bool) -> Result<(), RuntimeError> {
         match target {
-            Expr::Ident(name) => {
+            Expr::Ident(name, _) => {
                 env.borrow_mut().set(name, val)?;
             }
-            Expr::Field { obj, field } => {
+            Expr::Field { obj, field, .. } => {
                 let obj_val = self.eval(obj, env.clone())?;
                 match obj_val {
                     Value::Instance(inst) => {
@@ -648,7 +648,7 @@ impl Interpreter {
                 Ok(Value::Str(Rc::new(result)))
             }
 
-            Expr::Ident(name) => {
+            Expr::Ident(name, _) => {
                 env.borrow().get(name)
                     .ok_or_else(|| RuntimeError::new(format!("未定义的变量 '{name}'")))
             }
@@ -710,7 +710,7 @@ impl Interpreter {
                 for (k, v) in pairs {
                     // dict 字面量中 Ident key 自动转为字符串（{ name = 1 } 中的 name）
                     let kv = match k {
-                        Expr::Ident(s) => Value::Str(Rc::new(s.clone())),
+                        Expr::Ident(s, _) => Value::Str(Rc::new(s.clone())),
                         _ => self.eval(k, env.clone())?,
                     };
                     let vv = self.eval(v, env.clone())?;
@@ -730,9 +730,9 @@ impl Interpreter {
                 })))
             }
 
-            Expr::Call { callee, args } => {
+            Expr::Call { callee, args, .. } => {
                 // 特殊处理方法调用：obj.method(args)
-                if let Expr::Field { obj, field } = callee.as_ref() {
+                if let Expr::Field { obj, field, .. } = callee.as_ref() {
                     let obj_val = self.eval(obj, env.clone())?;
                     let mut arg_vals = Vec::new();
                     for a in args { arg_vals.push(self.eval(&a.expr, env.clone())?); }
@@ -745,7 +745,7 @@ impl Interpreter {
                 self.call_value(func_val, arg_vals, None)
             }
 
-            Expr::Field { obj, field } => {
+            Expr::Field { obj, field, .. } => {
                 let obj_val = self.eval(obj, env.clone())?;
                 self.get_field(obj_val, field, env)
             }
@@ -756,7 +756,7 @@ impl Interpreter {
                 self.get_index(obj_val, idx_val)
             }
 
-            Expr::New { class, args } => {
+            Expr::New { class, args, .. } => {
                 let class_val = env.borrow().get(class)
                     .ok_or_else(|| RuntimeError::new(format!("未定义的类 '{class}'")))?;
                 let mut arg_vals = Vec::new();
@@ -1107,13 +1107,13 @@ impl Interpreter {
         for stmt in stmts {
             // 处理 self.field = val 赋值（允许不可变字段）
             let is_self_field_assign = match stmt {
-                Stmt::Assign { target: Expr::Field { obj, field: _ }, value: _ } => {
-                    matches!(obj.as_ref(), Expr::Ident(n) if n == "self")
+                Stmt::Assign { target: Expr::Field { obj, field: _, .. }, value: _ } => {
+                    matches!(obj.as_ref(), Expr::Ident(n, _) if n == "self")
                 }
                 _ => false,
             };
             if is_self_field_assign {
-                if let Stmt::Assign { target: Expr::Field { obj: _, field }, value } = stmt {
+                if let Stmt::Assign { target: Expr::Field { obj: _, field, .. }, value } = stmt {
                     let val = self.eval(value, env.clone())?;
                     if let Value::Instance(inst_rc) = inst {
                         inst_rc.borrow_mut().fields.insert(field.clone(), val);
@@ -1244,8 +1244,8 @@ impl Interpreter {
     // ── 重新解析插值表达式 ──
 
     fn eval_source(&mut self, src: &str, env: Rc<RefCell<Env>>) -> EvalResult {
-        use crate::lexer::Lexer;
-        use crate::parser::Parser;
+        use nb_core::lexer::Lexer;
+        use nb_core::parser::Parser;
         let tokens = Lexer::new(src).tokenize()
             .map_err(|e| RuntimeError::new(format!("插值解析错误: {e}")))?;
         let mut parser = Parser::new(tokens);

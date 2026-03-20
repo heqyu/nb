@@ -1,0 +1,57 @@
+{
+  "name": "nb-lang",
+  "displayName": "NB Language",
+  "description": "Language support for the NB programming language",
+  "version": "0.1.0",
+  "publisher": "nb-lang",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:nb"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "nb",
+        "aliases": ["NB", "nb"],
+        "extensions": [".nb"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "nb",
+        "scopeName": "source.nb",
+        "path": "./syntaxes/nb.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "NB Language",
+      "properties": {
+        "nb.lspPath": {
+          "type": "string",
+          "default": "nb-lsp",
+          "description": "nb-lsp 可执行文件的路径（默认从 PATH 中查找）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}

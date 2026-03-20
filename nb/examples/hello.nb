@@ -24,6 +24,10 @@ for i in 0..3 {
     print(i)
 }
 
+for i, v in "hello"{
+    print(i,v)
+}
+
 // class
 class Animal {
     name: string

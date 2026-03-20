@@ -1,13 +1,15 @@
 [package]
-name = "nb"
+name = "nb-lsp"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "nb"
+name = "nb-lsp"
 path = "src/main.rs"
 
 [dependencies]
 nb-core = { path = "../nb-core" }
-indexmap.workspace = true
-thiserror.workspace = true
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+dashmap = "6"

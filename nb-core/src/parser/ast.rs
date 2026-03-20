@@ -1,5 +1,18 @@
 use crate::lexer::StringPart;
 
+/// 源码位置（行列号，1-based）
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Span {
+    pub line: usize,
+    pub col: usize,
+}
+
+impl Span {
+    pub fn new(line: usize, col: usize) -> Self {
+        Self { line, col }
+    }
+}
+
 /// 类型注解（仅用于工具提示，不做运行时检查）
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeAnnotation {
@@ -16,6 +29,7 @@ pub enum Stmt {
         names: Vec<String>,
         mutable: bool,
         value: Option<Expr>,
+        span: Span,
     },
     /// let x = expr  /  let mut x = expr
     Let {
@@ -23,6 +37,8 @@ pub enum Stmt {
         mutable: bool,
         type_ann: Option<TypeAnnotation>,
         value: Option<Expr>,
+        span: Span,     // let 关键字位置
+        name_span: Span, // 变量名位置
     },
     /// 赋值  x = expr  /  x.field = expr  /  x[idx] = expr
     Assign {
@@ -50,6 +66,7 @@ pub enum Stmt {
         then_body: Vec<Stmt>,
         else_ifs: Vec<(Expr, Vec<Stmt>)>,
         else_body: Option<Vec<Stmt>>,
+        span: Span,
     },
     /// for i in expr { body }
     ForIn {
@@ -58,11 +75,13 @@ pub enum Stmt {
         value_mutable: bool,
         iter: Expr,
         body: Vec<Stmt>,
+        span: Span,
     },
     /// while cond { body }
     While {
         cond: Expr,
         body: Vec<Stmt>,
+        span: Span,
     },
     Break,
     Continue,
@@ -82,16 +101,19 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: Option<String>,   // None 表示匿名函数
+    pub name_span: Span,        // 函数名位置（匿名函数为 fn 关键字位置）
     pub async_: bool,
     pub params: Vec<Param>,
     pub ret_type: Option<TypeAnnotation>,
     pub throws: bool,
     pub body: Vec<Stmt>,
+    pub span: Span,             // fn 关键字位置
 }
 
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    pub name_span: Span,        // 参数名位置
     pub mutable: bool,
     pub type_ann: Option<TypeAnnotation>,
 }
@@ -100,14 +122,17 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct ClassDef {
     pub name: String,
+    pub name_span: Span,        // 类名位置
     pub parents: Vec<String>,   // 继承和 trait
     pub fields: Vec<FieldDef>,
     pub methods: Vec<MethodDef>,
+    pub span: Span,             // class 关键字位置
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldDef {
     pub name: String,
+    pub name_span: Span,        // 字段名位置
     pub mutable: bool,
     pub type_ann: Option<TypeAnnotation>,
 }
@@ -122,8 +147,10 @@ pub struct MethodDef {
 #[derive(Debug, Clone)]
 pub struct TraitDef {
     pub name: String,
+    pub name_span: Span,        // trait 名位置
     pub requires: Vec<FieldDef>,
     pub methods: Vec<FnDef>,
+    pub span: Span,             // trait 关键字位置
 }
 
 /// 二元操作符
@@ -143,7 +170,8 @@ pub enum Expr {
     Number(f64),
     StringLit(String),
     InterpolatedString(Vec<StringPart>),
-    Ident(String),
+    /// 标识符，携带位置信息
+    Ident(String, Span),
 
     /// 二元运算
     BinOp { left: Box<Expr>, op: BinOp, right: Box<Expr> },
@@ -153,14 +181,14 @@ pub enum Expr {
     Ternary { cond: Box<Expr>, then: Box<Expr>, else_: Box<Expr> },
 
     /// 函数调用  f(args)
-    Call { callee: Box<Expr>, args: Vec<CallArg> },
+    Call { callee: Box<Expr>, args: Vec<CallArg>, span: Span },
     /// 成员访问  obj.field
-    Field { obj: Box<Expr>, field: String },
+    Field { obj: Box<Expr>, field: String, field_span: Span },
     /// 下标  arr[idx]
     Index { obj: Box<Expr>, idx: Box<Expr> },
 
     /// new Class(args)
-    New { class: String, args: Vec<CallArg> },
+    New { class: String, class_span: Span, args: Vec<CallArg> },
     /// obj is Type
     Is { expr: Box<Expr>, type_name: String },
 
@@ -178,6 +206,19 @@ pub enum Expr {
     Array(Vec<Expr>),
     /// dict 字面量  { a = 1, b = 2 }
     Dict(Vec<(Expr, Expr)>),
+}
+
+impl Expr {
+    /// 获取表达式的 span（用于 LSP 位置计算）
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Ident(_, s)            => *s,
+            Expr::Call { span, .. }      => *span,
+            Expr::Field { field_span, .. } => *field_span,
+            Expr::New { class_span, .. } => *class_span,
+            _                            => Span::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
