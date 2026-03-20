@@ -172,36 +172,45 @@ fn member_completions(source: &str, obj_name: &str, prefix: &str) -> Vec<Complet
 
     let mut items: Vec<CompletionItem> = Vec::new();
 
-    // 类自身字段（不含 ctor）
+    // ── 1. 类自身字段（sortText "1_name"，最先显示）
     for field in &cd.fields {
         if field.name.starts_with(prefix) {
             items.push(CompletionItem {
                 label: field.name.clone(),
                 kind: Some(CompletionItemKind::FIELD),
                 detail: field.type_ann.as_ref().map(type_ann_str),
+                sort_text: Some(format!("1_{}", field.name)),
                 ..Default::default()
             });
         }
     }
 
-    // 类自身方法（排除 ctor）
+    // ── 2. 类自身方法（sortText "2_name"，字段之后）
     for method in &cd.methods {
         if method.static_ { continue; }
         let Some(name) = &method.fn_def.name else { continue };
         if name == "ctor" { continue; }
         if name.starts_with(prefix) {
-            items.push(fn_completion_item(name, &method.fn_def));
+            let mut item = fn_completion_item(name, &method.fn_def);
+            item.sort_text = Some(format!("2_{}", name));
+            items.push(item);
         }
     }
 
-    // 所有 mixin 的方法
+    // ── 3. mixin 方法（sortText "3_MixinName_name"，注明来源）
     for mixin_name in &cd.mixins {
         if let Some(md) = doc.mixin_map.get(mixin_name) {
             for f in &md.methods {
                 let Some(name) = &f.name else { continue };
                 if name == "ctor" { continue; }
                 if name.starts_with(prefix) && !items.iter().any(|i| &i.label == name) {
-                    items.push(fn_completion_item(name, f));
+                    let mut item = fn_completion_item(name, f);
+                    item.sort_text = Some(format!("3_{}_{}", mixin_name, name));
+                    // detail 显示类型签名 + 来源 mixin
+                    let sig = item.detail.map(|d| format!("{d}  •  {mixin_name}"))
+                        .unwrap_or_else(|| format!("• {mixin_name}"));
+                    item.detail = Some(sig);
+                    items.push(item);
                 }
             }
         }
