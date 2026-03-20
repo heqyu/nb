@@ -4,6 +4,7 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
+use crate::completion::get_completions;
 use crate::diagnostics::get_diagnostics;
 use crate::goto_def::get_definition;
 use crate::hover::get_hover;
@@ -61,6 +62,12 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 // Go to Definition
                 definition_provider: Some(OneOf::Left(true)),
+                // 代码补全
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".into(), ":".into()]),
+                    resolve_provider: Some(false),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -146,6 +153,20 @@ impl LanguageServer for Backend {
         if let Some(source) = self.documents.get(&uri) {
             let symbols = get_document_symbols(&source);
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn completion(
+        &self,
+        params: CompletionParams,
+    ) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri.to_string();
+        let pos = params.text_document_position.position;
+        if let Some(source) = self.documents.get(&uri) {
+            let items = get_completions(&source, pos);
+            Ok(Some(CompletionResponse::Array(items)))
         } else {
             Ok(None)
         }

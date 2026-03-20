@@ -4,6 +4,7 @@ mod symbol_table;
 mod symbols;
 mod hover;
 mod goto_def;
+mod completion;
 mod backend;
 
 use tower_lsp::{LspService, Server};
