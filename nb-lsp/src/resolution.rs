@@ -15,16 +15,95 @@ use nb_core::parser::{Parser, ast::*};
 
 use crate::symbol_table::{SymbolInfo};
 
+// ── 补全索引 ──────────────────────────────────────────────────────────────────
+
+/// 构建一次，供 completion 请求直接读取
+#[derive(Clone, Default)]
+pub struct CompletionIndex {
+    /// 变量名 → 类名（通过 let x = ClassName { ... } 推断）
+    pub type_map:     HashMap<String, String>,
+    /// 类名 → (ClassDef, receiver 方法列表)
+    pub class_map:    HashMap<String, (ClassDef, Vec<FnDef>)>,
+    /// mixin 名 → MixinDef
+    pub mixin_map:    HashMap<String, MixinDef>,
+    /// 所有顶层符号名（用于普通补全）
+    pub symbol_names: Vec<(String, tower_lsp::lsp_types::SymbolKind, Option<String>)>,
+}
+
+impl CompletionIndex {
+    pub fn from_stmts(stmts: &[Stmt]) -> Self {
+        let mut idx = CompletionIndex::default();
+        idx.collect_stmts(stmts);
+        idx
+    }
+
+    fn collect_stmts(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts { self.collect_stmt(stmt); }
+    }
+
+    fn collect_stmt(&mut self, stmt: &Stmt) {
+        use crate::symbol_table::type_ann_str;
+        use tower_lsp::lsp_types::SymbolKind;
+        match stmt {
+            Stmt::Let { name, value, type_ann, .. } => {
+                if let Some(Expr::StructLit { class, .. }) = value {
+                    self.type_map.insert(name.clone(), class.clone());
+                }
+                self.symbol_names.push((name.clone(), SymbolKind::VARIABLE,
+                    type_ann.as_ref().map(type_ann_str)));
+            }
+            Stmt::FnDef(f) => {
+                if let Some(n) = &f.name {
+                    if let Some(receiver) = &f.receiver {
+                        self.class_map
+                            .entry(receiver.clone())
+                            .or_insert_with(|| (ClassDef {
+                                name: receiver.clone(),
+                                name_span: Default::default(),
+                                mixins: vec![],
+                                fields: vec![],
+                                span: Default::default(),
+                            }, vec![]))
+                            .1
+                            .push(f.clone());
+                    } else {
+                        self.symbol_names.push((n.clone(), SymbolKind::FUNCTION, None));
+                    }
+                }
+            }
+            Stmt::ClassDef(cd) => {
+                let entry = self.class_map.entry(cd.name.clone())
+                    .or_insert_with(|| (cd.clone(), vec![]));
+                entry.0 = cd.clone();
+                self.symbol_names.push((cd.name.clone(), SymbolKind::CLASS, None));
+            }
+            Stmt::MixinDef(md) => {
+                self.mixin_map.insert(md.name.clone(), md.clone());
+                self.symbol_names.push((md.name.clone(), SymbolKind::INTERFACE, None));
+            }
+            Stmt::If { then_body, else_ifs, else_body, .. } => {
+                self.collect_stmts(then_body);
+                for (_, b) in else_ifs { self.collect_stmts(b); }
+                if let Some(b) = else_body { self.collect_stmts(b); }
+            }
+            Stmt::While { body, .. } | Stmt::ForIn { body, .. } => self.collect_stmts(body),
+            _ => {}
+        }
+    }
+}
+
 // ── 文档分析缓存 ──────────────────────────────────────────────────────────────
 
 /// 文档变更时构建一次，供所有 LSP 请求复用
 #[derive(Clone)]
 pub struct AnalyzedDoc {
-    pub source:  String,
-    pub tokens:  Vec<TokenWithPos>,
-    pub stmts:   Vec<Stmt>,
-    pub db:      ResolutionDB,
-    pub diagnostics: Vec<tower_lsp::lsp_types::Diagnostic>,
+    pub source:       String,
+    pub tokens:       Vec<TokenWithPos>,
+    pub stmts:        Vec<Stmt>,
+    pub db:           ResolutionDB,
+    pub diagnostics:  Vec<tower_lsp::lsp_types::Diagnostic>,
+    /// 补全所需的索引，构建时计算一次
+    pub completion:   CompletionIndex,
 }
 
 impl AnalyzedDoc {
@@ -40,7 +119,7 @@ impl AnalyzedDoc {
             Ok(t) => t,
             Err(e) => {
                 diags.push(lex_error_to_diag(&e));
-                return AnalyzedDoc { source, tokens: vec![], stmts: vec![], db: ResolutionDB::default(), diagnostics: diags };
+                return AnalyzedDoc { source, tokens: vec![], stmts: vec![], db: ResolutionDB::default(), completion: CompletionIndex::default(), diagnostics: diags };
             }
         };
 
@@ -48,12 +127,13 @@ impl AnalyzedDoc {
             Ok(s) => s,
             Err(e) => {
                 diags.push(parse_error_to_diag(&e));
-                return AnalyzedDoc { source, tokens, stmts: vec![], db: ResolutionDB::default(), diagnostics: diags };
+                return AnalyzedDoc { source, tokens, stmts: vec![], db: ResolutionDB::default(), completion: CompletionIndex::default(), diagnostics: diags };
             }
         };
 
-        let db = build_db_from_stmts(&stmts);
-        AnalyzedDoc { source, tokens, stmts, db, diagnostics: diags }
+        let db         = build_db_from_stmts(&stmts);
+        let completion = CompletionIndex::from_stmts(&stmts);
+        AnalyzedDoc { source, tokens, stmts, db, diagnostics: diags, completion }
     }
 }
 

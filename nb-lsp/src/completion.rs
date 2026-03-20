@@ -1,9 +1,8 @@
-use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 use nb_core::parser::ast::*;
 
 use crate::symbol_table::type_ann_str;
-use crate::resolution::AnalyzedDoc;
+use crate::resolution::{AnalyzedDoc, CompletionIndex};
 
 /// NB 语言关键字补全列表（label, snippet）
 const KEYWORDS: &[(&str, &str)] = &[
@@ -35,91 +34,6 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("false",    "false"),
 ];
 
-// ── 解析辅助结构 ──────────────────────────────────────────────────────────────
-
-struct ParsedDoc {
-    /// 变量名 → 类名（通过 let x = ClassName { ... } 推断）
-    type_map: HashMap<String, String>,
-    /// 类名 → (ClassDef, receiver 方法列表)
-    class_map: HashMap<String, (ClassDef, Vec<FnDef>)>,
-    /// mixin名 → MixinDef
-    mixin_map: HashMap<String, MixinDef>,
-    /// 所有顶层符号名（用于普通补全）
-    symbol_names: Vec<(String, SymbolKind, Option<String>)>,
-}
-
-impl ParsedDoc {
-    fn from_stmts(stmts: &[Stmt]) -> Self {
-        let mut doc = ParsedDoc {
-            type_map:     HashMap::new(),
-            class_map:    HashMap::new(),
-            mixin_map:    HashMap::new(),
-            symbol_names: Vec::new(),
-        };
-        doc.collect_stmts(stmts);
-        doc
-    }
-
-    fn collect_stmts(&mut self, stmts: &[Stmt]) {
-        for stmt in stmts {
-            self.collect_stmt(stmt);
-        }
-    }
-
-
-    fn collect_stmt(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Let { name, value, type_ann, .. } => {
-                // 推断类型：let x = ClassName { ... }
-                if let Some(Expr::StructLit { class, .. }) = value {
-                    self.type_map.insert(name.clone(), class.clone());
-                }
-                let detail = type_ann.as_ref().map(type_ann_str);
-                self.symbol_names.push((name.clone(), SymbolKind::VARIABLE, detail));
-            }
-            Stmt::FnDef(f) => {
-                if let Some(n) = &f.name {
-                    if let Some(receiver) = &f.receiver {
-                        // fn Player.method → 挂到对应 class 的方法列表
-                        self.class_map
-                            .entry(receiver.clone())
-                            .or_insert_with(|| (ClassDef {
-                                name: receiver.clone(),
-                                name_span: Default::default(),
-                                mixins: vec![],
-                                fields: vec![],
-                                span: Default::default(),
-                            }, vec![]))
-                            .1
-                            .push(f.clone());
-                    } else {
-                        self.symbol_names.push((n.clone(), SymbolKind::FUNCTION, None));
-                    }
-                }
-            }
-            Stmt::ClassDef(cd) => {
-                let entry = self.class_map.entry(cd.name.clone())
-                    .or_insert_with(|| (cd.clone(), vec![]));
-                // 更新 ClassDef（可能之前只占位）
-                entry.0 = cd.clone();
-                self.symbol_names.push((cd.name.clone(), SymbolKind::CLASS, None));
-            }
-            Stmt::MixinDef(md) => {
-                self.mixin_map.insert(md.name.clone(), md.clone());
-                self.symbol_names.push((md.name.clone(), SymbolKind::INTERFACE, None));
-            }
-            Stmt::If { then_body, else_ifs, else_body, .. } => {
-                self.collect_stmts(then_body);
-                for (_, b) in else_ifs { self.collect_stmts(b); }
-                if let Some(b) = else_body { self.collect_stmts(b); }
-            }
-            Stmt::While { body, .. } => self.collect_stmts(body),
-            Stmt::ForIn { body, .. } => self.collect_stmts(body),
-            _ => {}
-        }
-    }
-}
-
 // ── 主入口 ────────────────────────────────────────────────────────────────────
 
 pub fn get_completions(doc: &AnalyzedDoc, position: Position) -> Vec<CompletionItem> {
@@ -128,13 +42,12 @@ pub fn get_completions(doc: &AnalyzedDoc, position: Position) -> Vec<CompletionI
 
     // 成员访问补全（x.___）
     if let Some(obj_name) = dot_object(source, position) {
-        return member_completions(&doc.stmts, &obj_name, &prefix);
+        return member_completions(&doc.completion, &obj_name, &prefix);
     }
 
     // 普通补全：关键字 + 当前文档符号
     let mut items: Vec<CompletionItem> = Vec::new();
 
-    // 关键字
     for (kw, snippet) in KEYWORDS {
         if kw.starts_with(prefix.as_str()) {
             items.push(CompletionItem {
@@ -150,9 +63,7 @@ pub fn get_completions(doc: &AnalyzedDoc, position: Position) -> Vec<CompletionI
         }
     }
 
-    // 文档符号
-    let parsed = ParsedDoc::from_stmts(&doc.stmts);
-    for (name, kind, detail) in &parsed.symbol_names {
+    for (name, kind, detail) in &doc.completion.symbol_names {
         if name.starts_with(prefix.as_str()) && !items.iter().any(|i| &i.label == name) {
             items.push(symbol_item(name, *kind, detail.clone()));
         }
@@ -163,29 +74,14 @@ pub fn get_completions(doc: &AnalyzedDoc, position: Position) -> Vec<CompletionI
 
 // ── 成员补全 ──────────────────────────────────────────────────────────────────
 
-fn member_completions(stmts: &[Stmt], obj_name: &str, prefix: &str) -> Vec<CompletionItem> {
-    let doc = ParsedDoc::from_stmts(stmts);
-
-    // 推断对象类型
-    let class_name = if obj_name == "self" {
-        // self：从上下文找最近的 class，这里简单返回所有类成员
-        // 先按 type_map，如果没有就返回空（self 的处理见下面特殊路径）
-        doc.type_map.get(obj_name).cloned()
-    } else {
-        doc.type_map.get(obj_name).cloned()
-    };
-
-    let Some(class_name) = class_name else {
-        return vec![];
-    };
-
-    let Some((cd, receiver_methods)) = doc.class_map.get(&class_name) else {
-        return vec![];
-    };
+fn member_completions(idx: &CompletionIndex, obj_name: &str, prefix: &str) -> Vec<CompletionItem> {
+    let class_name = idx.type_map.get(obj_name).cloned();
+    let Some(class_name) = class_name else { return vec![]; };
+    let Some((cd, receiver_methods)) = idx.class_map.get(&class_name) else { return vec![]; };
 
     let mut items: Vec<CompletionItem> = Vec::new();
 
-    // ── 1. 类自身字段（sortText "1_name"，最先显示）
+    // 1. 类自身字段
     for field in &cd.fields {
         if field.name.starts_with(prefix) {
             items.push(CompletionItem {
@@ -198,7 +94,7 @@ fn member_completions(stmts: &[Stmt], obj_name: &str, prefix: &str) -> Vec<Compl
         }
     }
 
-    // ── 2. 类自身方法 fn ClassName.method（sortText "2_name"）
+    // 2. 类自身方法
     for f in receiver_methods {
         let Some(name) = &f.name else { continue };
         if name.starts_with(prefix) {
@@ -208,9 +104,9 @@ fn member_completions(stmts: &[Stmt], obj_name: &str, prefix: &str) -> Vec<Compl
         }
     }
 
-    // ── 3. mixin 方法（sortText "3_MixinName_name"，注明来源）
+    // 3. mixin 方法
     for mixin_name in &cd.mixins {
-        if let Some(md) = doc.mixin_map.get(mixin_name) {
+        if let Some(md) = idx.mixin_map.get(mixin_name) {
             for f in &md.methods {
                 let Some(name) = &f.name else { continue };
                 if name.starts_with(prefix) && !items.iter().any(|i| &i.label == name) {
@@ -230,7 +126,6 @@ fn member_completions(stmts: &[Stmt], obj_name: &str, prefix: &str) -> Vec<Compl
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
 
-/// 返回光标前正在输入的标识符前缀
 fn get_prefix(source: &str, pos: Position) -> String {
     let line = source_line(source, pos.line as usize);
     let before = &line[..pos.character as usize];
@@ -241,15 +136,12 @@ fn get_prefix(source: &str, pos: Position) -> String {
     before[start..].to_string()
 }
 
-/// 如果光标在 `ident.` 之后，返回 ident；否则返回 None
 fn dot_object(source: &str, pos: Position) -> Option<String> {
     let line = source_line(source, pos.line as usize);
     let char_pos = pos.character as usize;
     let before = &line[..char_pos.min(line.len())];
-    // 去掉光标前正在输入的前缀（例如 "p.lev" 中的 "lev"）
     let stripped = before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
     if !stripped.ends_with('.') { return None; }
-    // 取 '.' 之前的标识符
     let without_dot = &stripped[..stripped.len() - 1];
     let start = without_dot
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
@@ -270,12 +162,7 @@ fn symbol_item(name: &str, kind: SymbolKind, detail: Option<String>) -> Completi
         SymbolKind::INTERFACE => CompletionItemKind::INTERFACE,
         _                     => CompletionItemKind::VARIABLE,
     };
-    CompletionItem {
-        label: name.to_string(),
-        kind: Some(lsp_kind),
-        detail,
-        ..Default::default()
-    }
+    CompletionItem { label: name.to_string(), kind: Some(lsp_kind), detail, ..Default::default() }
 }
 
 fn fn_completion_item(name: &str, f: &FnDef) -> CompletionItem {

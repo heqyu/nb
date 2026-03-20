@@ -37,6 +37,8 @@ print(p.level)
 p.damage(30)
 print(p.hp)
 print(p.is_dead())
+p.damage(80)
+print(p.is_dead())
 
 // is 检查
 print(p is Player)

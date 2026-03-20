@@ -29,8 +29,10 @@ impl Backend {
     }
 
     async fn on_change(&self, uri: Url, text: String) {
-        // 唯一一次 lex + parse + build_db
-        let doc = AnalyzedDoc::from_source(text);
+        // lex + parse + build_db 全部在线程池执行，不阻塞 tokio 异步任务
+        let doc = tokio::task::spawn_blocking(move || AnalyzedDoc::from_source(text))
+            .await
+            .expect("analysis panicked");
         let diagnostics = doc.diagnostics.clone();
         self.docs.insert(uri.to_string(), doc);
         self.client.publish_diagnostics(uri, diagnostics, None).await;
