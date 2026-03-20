@@ -22,6 +22,11 @@ impl Parser {
         Self { tokens, pos: 0 }
     }
 
+    /// 公开给 vm 用于解析字符串插值表达式
+    pub fn parse_expr_pub(&mut self) -> Result<Expr, ParseError> {
+        self.parse_expr()
+    }
+
     pub fn parse_program(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut stmts = Vec::new();
         while !self.is_eof() {
@@ -79,6 +84,10 @@ impl Parser {
         }
     }
 
+    fn peek_next_token(&self) -> &Token {
+        self.tokens.get(self.pos + 1).map(|t| &t.token).unwrap_or(&Token::Eof)
+    }
+
     fn check(&self, tok: &Token) -> bool { self.peek() == tok }
 
     fn eat(&mut self, tok: &Token) -> bool {
@@ -113,8 +122,21 @@ impl Parser {
         while self.eat(&Token::Comma) {
             extra_names.push(self.expect_ident()?);
         }
-        let type_ann = if extra_names.is_empty() && self.eat(&Token::Colon) {
-            Some(self.parse_type_ann()?)
+        // 类型注解：只在单变量且下一个 token 是 Colon 且再下一个是 Ident 时解析
+        // 避免把三元表达式的 : 误当作类型注解
+        let type_ann = if extra_names.is_empty() {
+            if self.check(&Token::Colon) {
+                // 向前看：colon 后面必须是标识符（类型名），否则不是类型注解
+                let is_type_ann = matches!(self.peek_next_token(), Token::Ident(_));
+                if is_type_ann {
+                    self.advance(); // eat Colon
+                    Some(self.parse_type_ann()?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -122,8 +144,6 @@ impl Parser {
         if extra_names.is_empty() {
             Ok(Stmt::Let { name, mutable, type_ann, value })
         } else {
-            // 展开为多变量 let，第一个是 name，其余是 extra_names
-            // 语法糖：let a, b = expr 等价于多重绑定
             Ok(Stmt::MultiLet {
                 names: std::iter::once(name).chain(extra_names).collect(),
                 mutable,
@@ -289,7 +309,11 @@ impl Parser {
     }
 
     fn parse_expr_stmt(&mut self) -> Result<Stmt, ParseError> {
-        let expr = self.parse_expr()?;
+        let mut expr = self.parse_expr()?;
+        // 后缀 ? 只在语句层面处理（避免和三元 ? 冲突）
+        if self.eat(&Token::Question) {
+            expr = Expr::Try(Box::new(expr));
+        }
         match self.peek().clone() {
             Token::Assign      => { self.advance(); let v = self.parse_expr()?; Ok(Stmt::Assign { target: expr, value: v }) }
             Token::PlusAssign  => { self.advance(); let v = self.parse_expr()?; Ok(Stmt::CompoundAssign { target: expr, op: BinOp::Add, value: v }) }
@@ -447,10 +471,6 @@ impl Parser {
                     self.advance();
                     let type_name = self.expect_ident()?;
                     expr = Expr::Is { expr: Box::new(expr), type_name };
-                }
-                Token::Question => {
-                    self.advance();
-                    expr = Expr::Try(Box::new(expr));
                 }
                 _ => break,
             }

@@ -1,0 +1,83 @@
+-- 测试 trait
+trait Damageable {
+    require hp: number
+    fn damage(mut self, val) {
+        self.hp = self.hp - val
+    }
+    fn is_dead(self) {
+        return self.hp <= 0
+    }
+}
+
+-- 测试 class 继承
+class Entity {
+    name: string
+    mut hp: number
+    fn ctor(self, name, hp) {
+        self.name = name
+        self.hp = hp
+    }
+    fn to_string(self) {
+        return "${self.name}(hp=${self.hp})"
+    }
+}
+
+class Player : Entity, Damageable {
+    mut level: number
+    fn ctor(self, name, hp) {
+        self.level = 1
+    }
+    fn level_up(mut self) {
+        self.level = self.level + 1
+    }
+}
+
+let mut p = new Player("rex", 100)
+print(p.name)
+print(p.hp)
+print(p.level)
+
+p.level_up()
+print(p.level)
+
+p.damage(30)
+print(p.hp)
+print(p.is_dead())
+
+-- is 检查
+print(p is Player)
+print(p is Entity)
+print(p is Damageable)
+
+-- static 方法
+class MathHelper {
+    static fn add(a, b) {
+        return a + b
+    }
+}
+print(MathHelper.add(3, 7))
+
+-- array 方法
+let mut arr = [3, 1, 4, 1, 5, 9, 2, 6]
+let sorted = arr.sort()
+print(sorted.join(", "))
+
+let doubled = arr.map(fn(x) { return x * 2 })
+print(type(doubled))
+
+-- dict
+let mut d = { name = "NB", version = 1 }
+print(d.has("name"))
+print(d.keys().join(", "))
+d.delete("version")
+print(d.len())
+
+-- string 方法
+let s = "  hello world  "
+print(s.trim())
+print(s.trim().upper())
+print(s.trim().split(" ").join("-"))
+
+-- string.format
+let msg = string.format("Hello {0}, version {1}", "NB", 1)
+print(msg)
