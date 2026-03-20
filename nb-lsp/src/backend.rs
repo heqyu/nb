@@ -5,6 +5,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::diagnostics::get_diagnostics;
+use crate::hover::get_hover;
 use crate::semantic::{get_semantic_tokens, semantic_token_legend};
 use crate::symbols::get_document_symbols;
 
@@ -55,6 +56,8 @@ impl LanguageServer for Backend {
                 ),
                 // 文档大纲
                 document_symbol_provider: Some(OneOf::Left(true)),
+                // Hover
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -104,6 +107,16 @@ impl LanguageServer for Backend {
                 result_id: None,
                 data: tokens,
             })))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri.to_string();
+        let pos = params.text_document_position_params.position;
+        if let Some(source) = self.documents.get(&uri) {
+            Ok(get_hover(&source, pos))
         } else {
             Ok(None)
         }
