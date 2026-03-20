@@ -10,6 +10,8 @@ pub enum SymbolInfo {
         name: String,
         mutable: bool,
         type_ann: Option<TypeAnnotation>,
+        /// 推断出的类名（如 let p = Player{...} → "Player"），供 completion 使用
+        inferred_class: Option<String>,
     },
     Field {
         name: String,
@@ -39,6 +41,8 @@ pub enum SymbolInfo {
         name: String,
         mutable: bool,
         type_ann: Option<TypeAnnotation>,
+        /// 推断出的类名
+        inferred_class: Option<String>,
     },
 }
 
@@ -109,6 +113,7 @@ fn collect_stmt(stmt: &Stmt, out: &mut Vec<SymbolEntry>) {
                     name: name.clone(),
                     mutable: *mutable,
                     type_ann: type_ann.clone(),
+                    inferred_class: None,
                 },
                 def_span: *name_span,
             });
@@ -182,6 +187,7 @@ fn collect_fndef(f: &FnDef, out: &mut Vec<SymbolEntry>) {
                     name: p.name.clone(),
                     mutable: p.mutable,
                     type_ann: p.type_ann.clone(),
+                    inferred_class: None,
                 },
                 def_span: p.name_span,
             });

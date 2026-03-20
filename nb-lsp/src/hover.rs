@@ -24,14 +24,18 @@ fn render_hover(info: &SymbolInfo) -> String {
             let ty = opt_type(type_ann.as_ref());
             format!("```nb\n// {}.{}\n{}{}{};\n```", class_name, name, mut_, name, ty)
         }
-        SymbolInfo::Variable { name, mutable, type_ann } => {
+        SymbolInfo::Variable { name, mutable, type_ann, inferred_class } => {
             let mut_ = if *mutable { "mut " } else { "" };
-            let ty = opt_type(type_ann.as_ref());
+            let ty = type_ann.as_ref().map(|t| format!(": {}", type_ann_str(t)))
+                .or_else(|| inferred_class.as_ref().map(|c| format!(": {}", c)))
+                .unwrap_or_default();
             format!("```nb\nlet {}{}{};\n```", mut_, name, ty)
         }
-        SymbolInfo::Parameter { name, mutable, type_ann } => {
+        SymbolInfo::Parameter { name, mutable, type_ann, inferred_class } => {
             let mut_ = if *mutable { "mut " } else { "" };
-            let ty = opt_type(type_ann.as_ref());
+            let ty = type_ann.as_ref().map(|t| format!(": {}", type_ann_str(t)))
+                .or_else(|| inferred_class.as_ref().map(|c| format!(": {}", c)))
+                .unwrap_or_default();
             format!("```nb\nparam {}{}{};\n```", mut_, name, ty)
         }
         SymbolInfo::Function { name, params, ret_type, async_, throws, receiver } => {

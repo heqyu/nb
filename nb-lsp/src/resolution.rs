@@ -132,7 +132,17 @@ impl AnalyzedDoc {
         };
 
         let db         = build_db_from_stmts(&stmts);
-        let completion = CompletionIndex::from_stmts(&stmts);
+        let mut completion = CompletionIndex::from_stmts(&stmts);
+        // 用 DB 里已推断出的 inferred_class 补充 type_map（支持 let q = p 传播）
+        for info in db.def_info.values() {
+            match info {
+                SymbolInfo::Variable { name, inferred_class: Some(cls), .. }
+                | SymbolInfo::Parameter { name, inferred_class: Some(cls), .. } => {
+                    completion.type_map.entry(name.clone()).or_insert_with(|| cls.clone());
+                }
+                _ => {}
+            }
+        }
         AnalyzedDoc { source, tokens, stmts, db, diagnostics: diags, completion }
     }
 }
@@ -427,14 +437,15 @@ fn resolve_stmt(stmt: &Stmt, scope: &mut Scope, defs: &Definitions, db: &mut Res
             // 先解析右侧（避免自引用）
             let type_name = value.as_ref().and_then(|e| {
                 resolve_expr(e, scope, defs, db);
-                infer_type(e, scope)
+                infer_type(e, scope, defs)
             });
             scope.define(name.clone(), *name_span, type_name.clone());
-            // 把 let 变量定义写入 def_info
+            // 把 let 变量定义写入 def_info，携带推断出的类名
             db.def_info.entry(*name_span).or_insert_with(|| SymbolInfo::Variable {
                 name: name.clone(),
                 mutable: matches!(stmt, Stmt::Let { mutable: true, .. }),
                 type_ann: None,
+                inferred_class: type_name.clone(),
             });
         }
         Stmt::FnDef(f) => {
@@ -449,11 +460,13 @@ fn resolve_stmt(stmt: &Stmt, scope: &mut Scope, defs: &Definitions, db: &mut Res
             // 参数加入作用域
             for p in &f.params {
                 if p.name != "self" {
-                    fn_scope.define(p.name.clone(), p.name_span, None);
+                    let param_class = p.type_ann.as_ref().and_then(type_ann_class_name);
+                    fn_scope.define(p.name.clone(), p.name_span, param_class.clone());
                     db.def_info.entry(p.name_span).or_insert_with(|| SymbolInfo::Parameter {
                         name: p.name.clone(),
                         mutable: p.mutable,
                         type_ann: p.type_ann.clone(),
+                        inferred_class: param_class,
                     });
                 }
             }
@@ -475,7 +488,14 @@ fn resolve_stmt(stmt: &Stmt, scope: &mut Scope, defs: &Definitions, db: &mut Res
                 let mut fn_scope = Scope::with_self(md.name.clone());
                 for p in &f.params {
                     if p.name != "self" {
-                        fn_scope.define(p.name.clone(), p.name_span, None);
+                        let pc = p.type_ann.as_ref().and_then(type_ann_class_name);
+                        fn_scope.define(p.name.clone(), p.name_span, pc.clone());
+                        db.def_info.entry(p.name_span).or_insert_with(|| SymbolInfo::Parameter {
+                            name: p.name.clone(),
+                            mutable: p.mutable,
+                            type_ann: p.type_ann.clone(),
+                            inferred_class: pc,
+                        });
                     }
                 }
                 resolve_stmts(&f.body, &mut fn_scope, defs, db);
@@ -530,7 +550,7 @@ fn resolve_expr(expr: &Expr, scope: &Scope, defs: &Definitions, db: &mut Resolut
         Expr::Field { obj, field, field_span } => {
             resolve_expr(obj, scope, defs, db);
             // 推断 obj 的类型，再查字段/方法定义
-            let class_name = infer_type(obj, scope);
+            let class_name = infer_type(obj, scope, defs);
             resolve_field_access(field, *field_span, class_name.as_deref(), defs, db);
         }
         Expr::Call { callee, args, .. } => {
@@ -669,19 +689,77 @@ fn resolve_field_access(
 
 // ── 类型推断 ──────────────────────────────────────────────────────────────────
 
-/// 对一个表达式做轻量类型推断，返回类名（String）
-fn infer_type(expr: &Expr, scope: &Scope) -> Option<String> {
+/// 对一个表达式做类型推断，返回类名（String）。
+/// 支持：标识符、self、struct 字面量、字段访问、函数调用（查返回类型）。
+fn infer_type(expr: &Expr, scope: &Scope, defs: &Definitions) -> Option<String> {
     match expr {
-        Expr::Ident(name, _) => {
-            if name == "self" {
-                return scope.self_type.clone();
-            }
-            scope.lookup_var(name).and_then(|(_, t)| t)
-        }
+        // self → 当前方法接收者类型
+        Expr::Ident(name, _) if name == "self" => scope.self_type.clone(),
+
+        // 普通变量 → 查 scope 中记录的推断类型
+        Expr::Ident(name, _) => scope.lookup_var(name).and_then(|(_, t)| t),
+
+        // ClassName { ... } → 直接已知
         Expr::StructLit { class, .. } => Some(class.clone()),
-        // obj.field 的类型推断（浅层，不追踪方法返回值）
+
+        // obj.field → 查字段的类型注解
+        Expr::Field { obj, field, .. } => {
+            let class_name = infer_type(obj, scope, defs)?;
+            // 先查 class 字段类型注解
+            if let Some((fd, _)) = defs.fields.get(&(class_name.clone(), field.clone())) {
+                if let Some(ann) = &fd.type_ann {
+                    let type_name = type_ann_class_name(ann);
+                    if type_name.is_some() { return type_name; }
+                }
+            }
+            // 查 receiver 方法返回类型
+            if let Some(methods) = defs.methods.get(&class_name) {
+                if let Some(f) = methods.iter().find(|f| f.name.as_deref() == Some(field.as_str())) {
+                    if let Some(ann) = &f.ret_type {
+                        return type_ann_class_name(ann);
+                    }
+                }
+            }
+            None
+        }
+
+        // f(args) → 查函数返回类型
+        Expr::Call { callee, .. } => {
+            match callee.as_ref() {
+                // 简单函数调用 f(...)
+                Expr::Ident(name, _) => {
+                    if let Some((f, _)) = defs.functions.get(name) {
+                        return f.ret_type.as_ref().and_then(type_ann_class_name);
+                    }
+                    None
+                }
+                // 方法调用 obj.method(...)
+                Expr::Field { obj, field, .. } => {
+                    let class_name = infer_type(obj, scope, defs)?;
+                    if let Some(methods) = defs.methods.get(&class_name) {
+                        if let Some(f) = methods.iter().find(|f| f.name.as_deref() == Some(field.as_str())) {
+                            return f.ret_type.as_ref().and_then(type_ann_class_name);
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+
         _ => None,
     }
+}
+
+/// 从类型注解中提取类名（仅当是简单的 Simple 注解，且首字母大写时认为是类）
+fn type_ann_class_name(ann: &TypeAnnotation) -> Option<String> {
+    if let TypeAnnotation::Simple(name) = ann {
+        // 首字母大写才认为是类/mixin 名
+        if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+            return Some(name.clone());
+        }
+    }
+    None
 }
 
 // ── 公共查询工具 ──────────────────────────────────────────────────────────────
