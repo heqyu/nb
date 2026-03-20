@@ -1,7 +1,9 @@
 mod diagnostics;
 mod semantic;
+mod symbol_table;
 mod symbols;
 mod hover;
+mod goto_def;
 mod backend;
 
 use tower_lsp::{LspService, Server};

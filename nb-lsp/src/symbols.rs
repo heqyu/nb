@@ -1,14 +1,10 @@
 use tower_lsp::lsp_types::*;
 use nb_core::lexer::Lexer;
 use nb_core::parser::{Parser, ast::*};
+use crate::symbol_table::{span_to_lsp_range, type_ann_str};
 
 fn span_to_range(span: &Span, length: u32) -> Range {
-    let start = Position::new(
-        (span.line as u32).saturating_sub(1),
-        (span.col  as u32).saturating_sub(1),
-    );
-    let end = Position::new(start.line, start.character + length);
-    Range::new(start, end)
+    span_to_lsp_range(span, length)
 }
 
 /// 对给定源码生成文档大纲（Document Symbols）
@@ -148,15 +144,4 @@ fn fn_signature(f: &FnDef) -> String {
         .map(|t| format!(": {}", type_ann_str(t)))
         .unwrap_or_default();
     format!("({}){}", params.join(", "), ret)
-}
-
-fn type_ann_str(t: &TypeAnnotation) -> String {
-    match t {
-        TypeAnnotation::Simple(s) => s.clone(),
-        TypeAnnotation::Generic(name, args) => {
-            let args: Vec<String> = args.iter().map(type_ann_str).collect();
-            format!("{}<{}>", name, args.join(", "))
-        }
-        TypeAnnotation::Any => "any".to_string(),
-    }
 }

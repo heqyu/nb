@@ -5,6 +5,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
 use crate::diagnostics::get_diagnostics;
+use crate::goto_def::get_definition;
 use crate::hover::get_hover;
 use crate::semantic::{get_semantic_tokens, semantic_token_legend};
 use crate::symbols::get_document_symbols;
@@ -58,6 +59,8 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 // Hover
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                // Go to Definition
+                definition_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -107,6 +110,19 @@ impl LanguageServer for Backend {
                 result_id: None,
                 data: tokens,
             })))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri.clone();
+        let pos = params.text_document_position_params.position;
+        if let Some(source) = self.documents.get(&uri.to_string()) {
+            Ok(get_definition(&source, &uri, pos).map(GotoDefinitionResponse::Scalar))
         } else {
             Ok(None)
         }
